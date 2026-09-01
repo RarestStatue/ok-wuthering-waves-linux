@@ -7,7 +7,11 @@ name = "ok-ww"
 version = "0.0.1"
 requires-python = ">=3.11"
 dependencies = [
-    "ok-script[ocr,qt]>=2.0.5",
+    # Windows keeps the published wheel. Linux needs the fork: upstream's metadata pins
+    # pywin32 / pydirectinput / pycaw with no platform markers, so `pip install ok-script`
+    # cannot even resolve here.
+    "ok-script[ocr,qt]>=2.0.5 ; sys_platform == 'win32'",
+    "ok-script[ocr,qt] @ git+https://github.com/RarestStatue/ok-script-linux@linux-port ; sys_platform == 'linux'",
     "onnxocr-ppocrv5>=0.0.20",
     "openvino",
     "opencv-python",
@@ -23,5 +27,6 @@ docs = [
     "mkdocs-material>=9.5,<10",
 ]
 web-test = [
-    "ok-script[web]==2.0.0b7",
+    # 2.0.0b7 predates the fork and has no platform markers; keep it off Linux.
+    "ok-script[web]==2.0.0b7 ; sys_platform == 'win32'",
 ]

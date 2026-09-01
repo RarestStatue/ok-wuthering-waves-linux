@@ -1,0 +1,88 @@
+#
+# Linux lockfile. `requirements.txt` is the Windows one -- resolving a single file for
+# both is impossible while ok-script comes from a different source per platform, and every
+# CI job except one is windows-latest.
+#
+# Regenerate with:
+#     pip-compile --pip-args='--index-url https://pypi.org/simple --timeout 60 --retries 10' \
+#         --output-file=requirements-linux.txt pyproject.toml
+#
+certifi==2026.7.22
+    # via requests
+charset-normalizer==3.5.1
+    # via requests
+darkdetect==0.8.0
+    # via
+    #   ok-script
+    #   pyside6-fluent-widgets
+evdev==2.0.0
+    # via pynput
+idna==3.19
+    # via requests
+mouse==0.7.1
+    # via ok-script
+numpy==2.5.2
+    # via
+    #   opencv-python
+    #   openvino
+    #   shapely
+ok-script[ocr,qt] @ git+https://github.com/RarestStatue/ok-script-linux@linux-port ; sys_platform == "linux"
+    # via ok-ww (pyproject.toml)
+onnxocr-ppocrv5==0.0.22
+    # via
+    #   ok-script
+    #   ok-ww (pyproject.toml)
+opencv-python==5.0.0.93
+    # via ok-ww (pyproject.toml)
+openvino==2026.3.1
+    # via ok-ww (pyproject.toml)
+openvino-telemetry==2025.2.0
+    # via openvino
+pillow==12.3.0
+    # via onnxocr-ppocrv5
+psutil==7.2.2
+    # via ok-script
+pyappify==1.0.13
+    # via
+    #   ok-script
+    #   ok-ww (pyproject.toml)
+pyclipper==1.4.0
+    # via onnxocr-ppocrv5
+pynput==1.8.2
+    # via ok-script
+pyside6==6.11.2
+    # via pyside6-fluent-widgets
+pyside6-addons==6.11.2
+    # via pyside6
+pyside6-essentials==6.11.2
+    # via
+    #   ok-script
+    #   pyside6
+    #   pyside6-addons
+pyside6-fluent-widgets==1.11.3
+    # via ok-script
+pysidesix-frameless-window==0.8.2
+    # via
+    #   ok-script
+    #   pyside6-fluent-widgets
+python-xlib==0.33
+    # via
+    #   ok-script
+    #   pynput
+requests==2.34.2
+    # via ok-script
+shapely==2.1.2
+    # via onnxocr-ppocrv5
+shiboken6==6.11.2
+    # via
+    #   pyside6
+    #   pyside6-addons
+    #   pyside6-essentials
+six==1.17.0
+    # via
+    #   pynput
+    #   python-xlib
+typing-extensions==4.16.0
+    # via ok-script
+urllib3==2.7.0
+    # via requests
