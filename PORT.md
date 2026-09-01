@@ -1341,9 +1341,13 @@ things break:
 
 * Callers guard with `try: import winreg / except ImportError` (ok-ww `config.py:13-16`).
   A stubbed module defeats that guard, and the `NotImplementedError` from the first call
-  then escapes game-install detection entirely. Registry calls must raise **`OSError`** —
+  then escapes game-install detection entirely. Registry calls must raise an **`OSError`** —
   which is not a fudge, it is the accurate answer on a machine with no registry, and it is
-  what every caller already handles as "nothing registered".
+  what every caller already handles as "nothing registered". **The exact type matters and
+  this paragraph originally got it wrong: it must be `FileNotFoundError`**, the `OSError`
+  subclass real winreg raises for a missing key, because `ok/alas/emulator_windows.py`
+  guards eleven lookups with `except FileNotFoundError` and a bare `OSError` escapes every
+  one of them [see §9b].
 * `winreg`'s constants are combined: `winreg.KEY_READ | winreg.KEY_WOW64_64KEY`
   (`config.py`) raises `TypeError: unsupported operand type(s) for |`. They must be real
   integers, exactly like `win32con`'s.
@@ -1407,11 +1411,12 @@ Config load, game-install detection, the single-instance lock, the full lazy-imp
 and `DeviceManager` construction all run. The first thing missing is Phase 2's XRandR work,
 exactly as §4 predicted.
 
-**Verification state.** ok-script fork: 383 passed / 6 failed / 1 skipped (Python 3.12,
+**Verification state.** ok-script fork: **376 passed / 6 failed / 1 skipped** (Python 3.12,
 `QT_QPA_PLATFORM=offscreen`, all extras installed). The six are Windows-only by
 construction — MuMu emulator path parsing, `os.startfile`, one exact Qt pixel height, and
-two pywebview WinForms tests — and are enumerated in the fork's `LINUX.md`. ok-ww's own
-suite passes (see §9b for the count). Three drift gates ship in the fork and should be run after every rebase:
+two pywebview WinForms tests — and are enumerated in the fork's `LINUX.md`. (This first
+read 383/6/1 and was not reproducible; the count is stable only after the `TaskTab` timer
+fix — see §9b.) ok-ww's own suite passes (see §9b for the count). Three drift gates ship in the fork and should be run after every rebase:
 `tools/scan_module_level_win32.py --check` (still 27 offenders, still the same 4 calling a
 loader at import), `tools/gen_win32con.py --check` (constants current), and
 `tools/check_linux_imports.py` (70/70).
