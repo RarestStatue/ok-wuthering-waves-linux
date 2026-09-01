@@ -1297,6 +1297,99 @@ Roughly **2–3 weeks** to a solid port, with a usable foreground-only build rea
 
 ---
 
+## 9. Phase 0-1 implementation record (2026-09-01) — what the plan got wrong
+
+Phases 0 and 1 are **done and verified**. The fork is
+`https://github.com/RarestStatue/ok-script-linux`, branch `linux-port`, based on upstream
+tag `v2.0.5` with `upstream` set as a remote; local checkout `/home/max/vsCODE/ok-script-linux`.
+ok-ww pins it through a `sys_platform` split in `pyproject.toml` plus a
+`requirements-linux.txt` lockfile.
+
+Six claims in §2/§4 turned out to be wrong when executed. Corrections, so nobody
+re-derives them:
+
+**C1. Phase 1 needs no `ok/util/window.py` stand-in at all.** [V22] says the module is
+"the sole choke point" and that the Phase-1 measurement required replacing it. That was
+measured against the *naive* stub. Under the corrected stub of §4/1c — the one whose
+`__call__` returns a handle for loader-shaped names — `ok/util/window.py` imports
+**unmodified**, and so does the whole device layer. Verified: `import ok.util.window`,
+`ok.device.capture_methods`, `ok.device.interaction_methods`, `ok.device.capture`,
+`ok.device.interaction`, `ok.device.DeviceManager` all succeed with zero diff to that file.
+Phase 2 still has to replace the *bodies*; it does not have to fight the import.
+
+**C2. `_LAZY_IMPORTS` has 70 entries, not 71.** The exit criterion passes at **70/70, zero
+skipped** — `run_web` resolves without the `web` extra, so the `SKIP` set in the §4 script
+is unnecessary.
+
+**C3. The stub must memoise attribute access.** `ctypes.windll.user32` has to be the *same
+object* on every access, as it is in real ctypes. Without that,
+`patch('...ctypes.windll.user32.GetDpiForWindow', ...)` patches a throwaway and silently
+does nothing — two upstream notification tests fail with wrong numbers rather than errors.
+
+**C4. The stub must not use `__slots__`,** or `mock.patch.object(win32gui, 'GetClientRect')`
+fails with `AttributeError: '_Missing' object has no attribute 'GetClientRect'`. Seven
+upstream tests hit this.
+
+**C5. `winreg` needs the same treatment as `win32con`, and then some.** [V25] singles out
+`win32con` as the silent-corruption hazard and treats `winreg` as a plain stub module. Two
+things break:
+
+* Callers guard with `try: import winreg / except ImportError` (ok-ww `config.py:13-16`).
+  A stubbed module defeats that guard, and the `NotImplementedError` from the first call
+  then escapes game-install detection entirely. Registry calls must raise **`OSError`** —
+  which is not a fudge, it is the accurate answer on a machine with no registry, and it is
+  what every caller already handles as "nothing registered".
+* `winreg`'s constants are combined: `winreg.KEY_READ | winreg.KEY_WOW64_64KEY`
+  (`config.py`) raises `TypeError: unsupported operand type(s) for |`. They must be real
+  integers, exactly like `win32con`'s.
+
+**C6. `win32api.MAKELONG` must be implemented, not stubbed.** [V25] notes its definition
+but leaves it in the `_Missing` column. It is a C macro on the hot input path
+(`post_message.py`, `genshin.py` — every click and wheel event), so raising there is wrong.
+
+**Two blockers §4 did not mention at all, both on the startup path before any window code:**
+
+* `ok/util/process.py:check_mutex` — `CreateMutexW`, the single-instance guard, is the
+  *first* thing `OK.__init__` does. Replaced with `flock(2)` on a file keyed by the same
+  md5-of-cwd (`ok/compat/single_instance.py`), keeping upstream's wait / identify-owner /
+  terminate policy. Better behaved than the named mutex: the kernel drops the lock if the
+  holder is killed.
+* `ok/__init__.py`'s DPI/console block runs unconditionally and calls
+  `ctypes.windll.shcore.SetProcessDpiAwareness`. Now `sys.platform`-branched, with POSIX
+  signal handlers standing in for `SetConsoleCtrlHandler` under the same `self.debug`
+  condition Windows uses.
+
+**One design change that removes a footgun.** §4/1c requires callers to run `install()`
+before `import ok`. In practice nothing does — upstream's own `test_headless_imports`
+spawns `python -c "import ok; ..."` and fails. `ok/__init__.py` now calls `install()` at
+the top of its own body on non-win32, before importing anything from `ok.*`, so a plain
+`import ok` bootstraps the whole layer. `ok/__init__.py` imports no Win32 at module scope,
+so the ordering is safe.
+
+**Where Phase 1 stops.** With ok-ww's real config on Linux:
+
+```
+OK(config) -> DeviceManager.__init__ -> HwndWindow.__init__
+           -> hwnd_window.py:392 get_monitors_bounds() -> win32api.EnumDisplayMonitors
+```
+
+Config load, game-install detection, the single-instance lock, the full lazy-import graph
+and `DeviceManager` construction all run. The first thing missing is Phase 2's XRandR work,
+exactly as §4 predicted.
+
+**Verification state.** ok-script fork: 383 passed / 6 failed / 1 skipped (Python 3.12,
+`QT_QPA_PLATFORM=offscreen`, all extras installed). The six are Windows-only by
+construction — MuMu emulator path parsing, `os.startfile`, one exact Qt pixel height, and
+two pywebview WinForms tests — and are enumerated in the fork's `LINUX.md`. ok-ww's own
+suite: 17/17. Three drift gates ship in the fork and should be run after every rebase:
+`tools/scan_module_level_win32.py --check` (still 27 offenders, still the same 4 calling a
+loader at import), `tools/gen_win32con.py --check` (constants current), and
+`tools/check_linux_imports.py` (70/70).
+
+**Still open, unchanged:** [GATE-1b] and [GATE-2]. Nothing in Phase 0-1 touched them.
+
+---
+
 ## Appendix — reproducing the spikes
 
 Artifacts from these sessions live in the scratchpad (session-scoped; recreate as needed). The one exception is `shim/spike-notepad.c`, which is committed in this repo.
