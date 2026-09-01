@@ -647,7 +647,7 @@ Handled in Phase 1a and Phase 5e. Also verified: the four `main*.py` entry point
 pip-compile --pip-args='--index-url https://pypi.org/simple' pyproject.toml
 ```
 
-Check the regenerated file no longer lists those four, and that `ok-script` points at the fork. Note `pyproject.toml`'s `web-test` extra pins a stale `ok-script[web]==2.0.0b7`; leave it or drop it, but do not let it pull an unforked ok-script into a Linux env.
+Check the regenerated file no longer lists those four, and that `ok-script` points at the fork. **This is not what was implemented — see §9 C7.** `requirements.txt` was kept as the Windows lock, since every CI job in this repo is `windows-latest`, and a second `requirements-linux.txt` was generated alongside it. Note `pyproject.toml`'s `web-test` extra pins a stale `ok-script[web]==2.0.0b7`; leave it or drop it, but do not let it pull an unforked ok-script into a Linux env.
 
 **1b. Do NOT guard the aggregators — this step was measured away [V22].**
 
@@ -662,7 +662,11 @@ Guarding them is not merely wasted effort, it is a regression:
 
 The Windows backends being *importable* on Linux is harmless: nothing selects them. `update_capture_method` (`update.py:16-44`) only instantiates the method names listed in `config['windows']['capture_method']`, and `DeviceManager`'s two interaction ladders only instantiate what `config['windows']['interaction']` names — both overridden in Phase 5b.
 
-**The only edits this phase needs in `ok/device/`:**
+**The `ok/device/` edits below belong to Phases 3-4, not this one** [see §9 C8]. Each one
+imports a module a later phase writes (`x11_window`, `x11_capture`, `wine_post_message`),
+so none of them can land in Phase 1. They are kept here because this is where the reasoning
+about *why* rebinding beats guarding lives; do each as the last step of the phase that
+writes the module it refers to:
 
 1. `ok/device/capture_methods/__init__.py` — add the two new Linux modules and make `HwndWindow` resolve to the Linux class:
 
@@ -691,6 +695,8 @@ The Windows backends being *importable* on Linux is harmless: nothing selects th
    ```
 
 3. `ok/device/capture_methods/update.py` — register the new capture methods (Phase 3).
+
+(1) and (3) land with Phase 3, (2) with Phase 4 — each once the module it imports exists.
 
 `ok/device/capture.py`, `ok/device/interaction.py`, `ok/device/capture_methods/types.py` and `ok/ui/overlay/__init__.py` need **no** changes: measured importable as-is under the stub. (`types.py`'s `is_valid_hwnd` already has its own `sys.platform == "win32"` branch at line 36; only its module-level `import win32gui` is Windows-flavoured, and the stub covers that.)
 
@@ -783,16 +789,13 @@ from ok.compat.win32_stub import install; install()   # must precede `import ok`
 import ok
 from ok import _LAZY_IMPORTS
 
-# Skip names whose *extras* are absent, or you will chase a failure that is not yours:
-#   run_web    -> ok.ui.web.server -> fastapi/uvicorn/pywebview  (ok-script's 'web' extra)
-#   MainWindow -> ok.ui.qt.MainWindow -> pyappify, PySide6       (installed by ok-ww, but
-#                 not in a bare checkout; keep it in the sweep once deps are installed)
-SKIP = {'run_web'}
+# Do NOT add a skip list. `run_web` resolves without ok-script's 'web' extra, so the one
+# this plan originally proposed bought nothing -- and as written it skipped on *any*
+# ModuleNotFoundError, which let an unrelated missing module (observed: cv2) turn a real
+# breakage into a green gate. If an entry ever does need a skip, match on `exc.name`.
 
 failed = []
 for name, (mod, attr) in _LAZY_IMPORTS.items():
-    if name in SKIP:
-        continue
     try:
         getattr(importlib.import_module(mod), attr)
     except Exception as e:
@@ -800,11 +803,13 @@ for name, (mod, attr) in _LAZY_IMPORTS.items():
 assert not failed, failed
 ```
 
-Every lazily-mapped symbol must resolve — that is what actually exercises `MainWindow`, `DeviceManager`, `check_mutex`, `windows_graphics_available`, `Analytics`. `_LAZY_IMPORTS` is module-level in `ok/__init__.py:94` (it is not in `__all__`, but the import works). There are **71** entries; the pass condition is `failed == []` with only `run_web` skipped.
+Every lazily-mapped symbol must resolve — that is what actually exercises `MainWindow`, `DeviceManager`, `check_mutex`, `windows_graphics_available`, `Analytics`. `_LAZY_IMPORTS` is module-level in `ok/__init__.py:94` (it is not in `__all__`, but the import works). There are **70** entries [see §9 C2]; the pass condition is `failed == []`, nothing skipped.
 
 **Do not add `ok.rotypes` or `ok.capture.windows` to this sweep** — they are unreachable on Linux by design **[V21]**, and adding them turns a green build red for no reason.
 
 This check only resolves *module-level* code. `MainWindow` reaches `ok/ui/qt/tasks/TemplateTab.py:19` (→ `windows_thumbnail`, which is already platform-guarded and whose `open()` returns `False` on Linux **[V16]**) from inside `__init__`, not at import. Follow the script with a headless `OK(config)` construction (`QT_QPA_PLATFORM=offscreen`) up to the point where `do_start` selects a capture method — that is the step that actually proves the GUI leaves are covered.
+
+**That second half is deferred and still unmet — it carries into Phase 2's exit gate** [see §9 C9]. Startup stops earlier, in `get_monitors_bounds()`, which is Phase 2's own first line of work, so `do_start` is never reached and the proof does not exist yet. The fork's Qt test files (`test_task_ui`, `test_template_tab`, `test_start_tab_overlay`, `test_core_ui_services`) cover much of the same ground incidentally. Phase 2 is not done until this runs.
 
 
 ### Phase 2 — `X11Window` (replaces `HwndWindow`)
@@ -1294,6 +1299,218 @@ Roughly **2–3 weeks** to a solid port, with a usable foreground-only build rea
 - **Ban risk: not measurably changed, but do not claim parity.** What the game receives is identical to the Windows build — synthesized `PostMessage` input, same messages, same lparams. WW runs Anti-Cheat Expert, and the project's own README already warns that use may result in account bans. But the *process topology* is not identical: upstream posts from a separate native Windows process, whereas this port runs a foreign PE (`okww-input-shim.exe`) inside the **same wineserver session and prefix as ACE**. Whether that is more visible to ACE is unverified, and this plan contains no evidence either way. Tell users the risk is at least as high as upstream's, never that Linux is "safer" — nothing here evades or interferes with anticheat, by design.
 - **Proton breaks WW periodically.** The game is not officially supported on desktop Linux; community Proton builds carry the fixes — this machine runs **dwproton-11.0-12**, and has 12 Proton builds installed side by side. Read the build from `config_info` at runtime and surface it in logs and bug reports; most user issues will be Proton-version-related, not ok-ww bugs. Never assume Valve Proton, and never assume one build.
 - **The game is launched by the user through Steam**, not by ok-ww. Design the attach flow accordingly: poll for the game process/window, attach when it appears, degrade cleanly when it vanishes (the user alt-F4s, Proton crashes). Do not attempt to launch the game yourself — `config.py`'s `calculate_pc_exe_path` exists for Windows launch support; on Linux, treat the exe path as identification data only.
+
+---
+
+## 9. Phase 0-1 implementation record (2026-09-01) — what the plan got wrong
+
+Phases 0 and 1 are **done and verified**. The fork is
+`https://github.com/RarestStatue/ok-script-linux`, branch `linux-port`, based on upstream
+tag `v2.0.5` with `upstream` set as a remote; local checkout `/home/max/vsCODE/ok-script-linux`.
+ok-ww pins it through a `sys_platform` split in `pyproject.toml` plus a
+`requirements-linux.txt` lockfile.
+
+Six claims in §2/§4 turned out to be wrong when executed. Corrections, so nobody
+re-derives them:
+
+**C1. Phase 1 needs no `ok/util/window.py` stand-in at all.** [V22] says the module is
+"the sole choke point" and that the Phase-1 measurement required replacing it. That was
+measured against the *naive* stub. Under the corrected stub of §4/1c — the one whose
+`__call__` returns a handle for loader-shaped names — `ok/util/window.py` imports
+**unmodified**, and so does the whole device layer. Verified: `import ok.util.window`,
+`ok.device.capture_methods`, `ok.device.interaction_methods`, `ok.device.capture`,
+`ok.device.interaction`, `ok.device.DeviceManager` all succeed with zero diff to that file.
+Phase 2 still has to replace the *bodies*; it does not have to fight the import.
+
+**C2. `_LAZY_IMPORTS` has 70 entries, not 71.** The exit criterion passes at **70/70, zero
+skipped** — `run_web` resolves without the `web` extra, so the `SKIP` set in the §4 script
+is unnecessary.
+
+**C3. The stub must memoise attribute access.** `ctypes.windll.user32` has to be the *same
+object* on every access, as it is in real ctypes. Without that,
+`patch('...ctypes.windll.user32.GetDpiForWindow', ...)` patches a throwaway and silently
+does nothing — two upstream notification tests fail with wrong numbers rather than errors.
+
+**C4. The stub must not use `__slots__`,** or `mock.patch.object(win32gui, 'GetClientRect')`
+fails with `AttributeError: '_Missing' object has no attribute 'GetClientRect'`. Seven
+upstream tests hit this.
+
+**C5. `winreg` needs the same treatment as `win32con`, and then some.** [V25] singles out
+`win32con` as the silent-corruption hazard and treats `winreg` as a plain stub module. Two
+things break:
+
+* Callers guard with `try: import winreg / except ImportError` (ok-ww `config.py:13-16`).
+  A stubbed module defeats that guard, and the `NotImplementedError` from the first call
+  then escapes game-install detection entirely. Registry calls must raise an **`OSError`** —
+  which is not a fudge, it is the accurate answer on a machine with no registry, and it is
+  what every caller already handles as "nothing registered". **The exact type matters and
+  this paragraph originally got it wrong: it must be `FileNotFoundError`**, the `OSError`
+  subclass real winreg raises for a missing key, because `ok/alas/emulator_windows.py`
+  guards eleven lookups with `except FileNotFoundError` and a bare `OSError` escapes every
+  one of them [see §9b].
+* `winreg`'s constants are combined: `winreg.KEY_READ | winreg.KEY_WOW64_64KEY`
+  (`config.py`) raises `TypeError: unsupported operand type(s) for |`. They must be real
+  integers, exactly like `win32con`'s.
+
+**C6. `win32api.MAKELONG` must be implemented, not stubbed.** [V25] notes its definition
+but leaves it in the `_Missing` column. It is a C macro on the hot input path
+(`post_message.py`, `genshin.py` — every click and wheel event), so raising there is wrong.
+
+**C7. `requirements.txt` was not regenerated; a second lockfile was added instead.**
+§4/1a says to re-run `pip-compile` here and check that `pywin32`, `pycaw`, `pydirectinput`
+and `comtypes` drop out. Doing that would have broken the only CI this repo has — every
+job in `.github/workflows/test.yml` is `windows-latest`, and those four are exactly what a
+Windows run needs. `requirements.txt` therefore stays the Windows lock and
+`requirements-linux.txt` is the Linux one, generated from the same `pyproject.toml`; the
+`sys_platform` markers in `pyproject.toml` are what actually make `pip install .` work on
+both. The ok-script line in the Linux lock is pinned to a fork **commit**, not to
+`@linux-port`: pip-compile carries the branch ref straight through, and a lock whose top
+dependency is a moving ref locks nothing. Repinning it is part of regenerating it — the
+recipe in the file header says so.
+
+**C8. Phase 1 needs no `ok/device/` edits at all.** §4/1b calls three of them "the only
+edits this phase needs". Each imports a module that Phase 3 or Phase 4 writes
+(`x11_window`, `x11_capture`, `wine_post_message`), so none could land in Phase 1 and none
+did. They are now labelled with the phase that owns them. Nothing about the *reasoning*
+in 1b changed — rebinding still beats guarding, for the reasons given there.
+
+**C9. The Phase-1 exit criterion's second half was never reached.** §4/1c asks for the
+lazy-import sweep *and* a headless `OK(config)` construction that gets as far as `do_start`
+selecting a capture method. The sweep passes 70/70; the construction stops earlier, at
+`get_monitors_bounds()`, which is Phase 2's own first line of work. So the "GUI leaves are
+covered" proof does not exist yet, and it moves to Phase 2's exit gate rather than being
+quietly dropped.
+
+**Two blockers §4 did not mention at all, both on the startup path before any window code:**
+
+* `ok/util/process.py:check_mutex` — `CreateMutexW`, the single-instance guard, is the
+  *first* thing `OK.__init__` does. Replaced with `flock(2)` on a file keyed by the same
+  md5-of-cwd (`ok/compat/single_instance.py`), keeping upstream's wait / identify-owner /
+  terminate policy. Better behaved than the named mutex: the kernel drops the lock if the
+  holder is killed.
+* `ok/__init__.py`'s DPI/console block runs unconditionally and calls
+  `ctypes.windll.shcore.SetProcessDpiAwareness`. Now `sys.platform`-branched, with POSIX
+  signal handlers standing in for `SetConsoleCtrlHandler` under the same `self.debug`
+  condition Windows uses.
+
+**One design change that removes a footgun.** §4/1c requires callers to run `install()`
+before `import ok`. In practice nothing does — upstream's own `test_headless_imports`
+spawns `python -c "import ok; ..."` and fails. `ok/__init__.py` now calls `install()` at
+the top of its own body on non-win32, before importing anything from `ok.*`, so a plain
+`import ok` bootstraps the whole layer. `ok/__init__.py` imports no Win32 at module scope,
+so the ordering is safe.
+
+**Where Phase 1 stops.** With ok-ww's real config on Linux:
+
+```
+OK(config) -> DeviceManager.__init__ -> HwndWindow.__init__
+           -> hwnd_window.py:392 get_monitors_bounds() -> win32api.EnumDisplayMonitors
+```
+
+Config load, game-install detection, the single-instance lock, the full lazy-import graph
+and `DeviceManager` construction all run. The first thing missing is Phase 2's XRandR work,
+exactly as §4 predicted.
+
+**Verification state.** ok-script fork: **376 passed / 6 failed / 1 skipped** (Python 3.12,
+`QT_QPA_PLATFORM=offscreen`, all extras installed). The six are Windows-only by
+construction — MuMu emulator path parsing, `os.startfile`, one exact Qt pixel height, and
+two pywebview WinForms tests — and are enumerated in the fork's `LINUX.md`. (This first
+read 383/6/1 and was not reproducible; the count is stable only after the `TaskTab` timer
+fix — see §9b.) ok-ww's own suite passes (see §9b for the count). Three drift gates ship in the fork and should be run after every rebase:
+`tools/scan_module_level_win32.py --check` (still 27 offenders, still the same 4 calling a
+loader at import), `tools/gen_win32con.py --check` (constants current), and
+`tools/check_linux_imports.py` (70/70).
+
+**Still open, unchanged:** [GATE-1b] and [GATE-2]. Nothing in Phase 0-1 touched them.
+
+---
+
+## 9b. Post-review corrections (2026-09-01)
+
+A gap review re-executed every load-bearing claim in §9. All of it held: the three gates,
+the 70/70 sweep, the `requirements.txt` install failure on Linux, the exact
+stopping point, and the verbatim `get_crop_point` transcription. Sixteen findings around the edges
+did not. Fifteen are fixed in fork commits `cba672b`, `c700b2d`, `12f64a3` plus the
+lockfile pin here; the sixteenth was rejected on inspection (see the `cv2` bullet), and one
+more had the right symptom but the wrong cause (see `-q`):
+
+* **The `winreg` stub raised a bare `OSError`.** C5's reasoning is right, its error type was
+  not: `ok/alas/emulator_windows.py` guards eleven registry lookups with
+  `except FileNotFoundError`, and a bare `OSError` escapes all of them —
+  `EmulatorManager().all_emulator_instances` died instead of returning `[]`. Now
+  `FileNotFoundError`, which is an `OSError` subclass, so both guard styles catch, and it is
+  what real winreg raises for a missing key. Latent rather than a startup blocker
+  (`refresh_emulators` returns early without an ADB config), but it sits on the ADB path.
+
+* **Two defects in the POSIX single-instance lock.** The handle is a file descriptor, and
+  `os.open` returns 0 when fd 0 is closed at launch — both `check_mutex` and
+  `_release_mutex` tested it for truthiness, so fd 0 misfired the re-entrancy check and
+  leaked the lock at exit. And `acquire()` returned `None` both for "somebody holds it" and
+  "could not open the file at all", so an unwritable `XDG_RUNTIME_DIR` sent `check_mutex`
+  on to *terminate a previous instance* that was never shown to exist. Open failure now
+  returns an `UNAVAILABLE` sentinel and `check_mutex` refuses to start.
+
+* **The exit gate could green over a real failure.** `check_linux_imports.py` skipped
+  `run_web` on *any* `ModuleNotFoundError`. In a venv with the `web` extra but without
+  `cv2` it printed `SKIP run_web ... No module named 'cv2'`; had that been the only
+  failure the gate would have exited 0 over a broken `ok.ui.web.server`. The skip list is
+  gone — as C2 already implied it should be.
+
+* **The fork's test baseline was not reproducible.** `LINUX.md` claimed 383/6/1; the real
+  number drifted between 8 and 12 failures across runs of the *same* command, while every
+  file passed alone. Cause: `TaskTab`'s 1s `QTimer` was unparented, outlived its widget and
+  fired `og.executor.current_task` into whatever test ran next, which pytest-qt blames on
+  the current test. Fixed at the source (parent the timer, treat a missing executor as
+  nothing to show); the suite is now stable at **376 passed / 6 failed / 1 skipped**.
+
+* **The missing summary line was `-q`, not `os._exit`.** The full run appeared to die
+  before printing its `N failed, M passed` stats. `pytest.ini`'s `addopts` already carries
+  `-q`, so a second one on the command line raises quiet to level 2, which suppresses that
+  line — the run is fine. Do not pass `-q`.
+
+* **The Linux gates now run in CI.** `.github/workflows/linux.yml` on `ubuntu-latest`: the
+  module-level Win32 scan, the lazy-import sweep, then the suite with the six documented
+  Windows-only failures deselected by node id. `gen_win32con.py --check` downloads the
+  pywin32 wheel from PyPI on every invocation, so it is a separate non-blocking job rather
+  than a gate that fails offline.
+
+* **The fork could have published to upstream's PyPI name.** It keeps `name = "ok-script"`
+  deliberately, so a `vX.Y.Z` tag would have run the inherited `publish.yml` against the
+  upstream project. Now gated on `github.repository`.
+
+* **The win32con coverage scan did not see `tests/`.** `test_notifications.py` uses six
+  constants of its own; all six are in the generated 94 today, but a test adopting a new one
+  would have failed at run time rather than at `--check`. Both walks now cover `tests/`.
+
+* **`cv2` is an undeclared ok-script dependency — and must stay that way.** ~14 modules
+  import it at module scope and nothing in the fork's `pyproject.toml` pulls it in; it only
+  ever arrives because ok-ww declares it. Following `LINUX.md`'s own repro gave 20
+  collection errors and `35/70 failed`, all `No module named 'cv2'`, which reads exactly
+  like a port regression. The obvious fix — declare `opencv-python` in the `default` extra —
+  is wrong: upstream's `tests/test_package_metadata.py` asserts that *no* profile mentions
+  opencv, so that a headless consumer can choose `opencv-python-headless`. Documented in
+  `LINUX.md`'s repro command instead.
+
+* **Documentation truthfulness.** C7/C8/C9 above; the Linux lockfile now pins a commit
+  rather than the `@linux-port` branch; `conftest.py` no longer claims to be what makes
+  pytest work (`ok/__init__.py` already installed the shim by the time it runs); and
+  `win32_stub`'s docstring records the audit behind its global `ctypes` patching — no
+  installed dependency platform-sniffs with `hasattr(ctypes, 'windll')`, and a new
+  dependency should be re-checked against that.
+
+One §9 number does not reproduce, and is not a defect: ok-ww's own suite is **12 passed**,
+not 17. Default pytest discovery collects the two `test_*.py` files; the repo's other 30
+test modules are named `Test*.py` and are only collected with an explicit
+`-o python_files="test_*.py Test*.py"` (192 tests), which needs a running game. Use the
+12-test figure.
+
+Post-review state, all re-measured: fork gates 27 offenders / 94 constants current /
+**70/70** resolved; fork suite **376 passed, 6 failed, 1 skipped**, stable across three
+consecutive runs of the same command; ok-ww **12/12**;
+`pip install --dry-run -r requirements-linux.txt` exit 0 against the pinned fork commit.
+
+Everything above is in the fork except the lockfile pin and this record. Phase 2 was not
+blocked by any of it.
 
 ---
 
