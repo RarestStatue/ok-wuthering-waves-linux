@@ -1554,7 +1554,8 @@ and one new one (`is_minimized`) are written here. The constructor is a
 *copy* rather than a `super().__init__()` call for one reason: upstream's body calls
 `get_monitors_bounds()` out of *its own* module globals, which is `win32api`. A drift test
 walks both classes' ASTs and fails if upstream's constructor gains an attribute the copy
-does not set, or a method the subclass does not have.
+does not set, or a method the subclass does not have. (Both halves of that gate were
+broken as shipped and could not fail; see §10b C15 for what they do now.)
 
 **D2. Two of the five `hwnd_window.py` helpers need no Linux version.** §4 says to port all
 five alongside `X11Window`. `check_pos` and `is_window_in_screen_bounds` are pure rectangle
@@ -1671,6 +1672,94 @@ window origin.
   launcher/login-dialog handling has no Linux equivalent. It costs nothing until someone
   tries to automate the launcher.
 * [GATE-1b] and [GATE-2] are untouched. Phase 2 could not test them and did not try.
+
+Ten further defects were found by reviewing this code after it landed (`GAPS.md`) and are
+fixed in ok-script-linux `9b33a03`; §10b records them. The numbers in this section are the
+record of Phase 2 as it shipped — §10b carries the current ones.
+
+---
+
+## 10b. Phase 2 post-review corrections (2026-09-01)
+
+A review of the shipped Phase 2 code (`GAPS.md`) found ten defects. All are fixed in
+ok-script-linux `9b33a03`, plus this repo's `.github/workflows/linux.yml` and the lock
+repin. Each was reproduced by execution first and each fix re-measured after. What is
+worth carrying forward:
+
+**C10. `resize_window`'s dimensions are the *window* rect, and that is not a detail.**
+Both callers pass outer dimensions — `try_resize_to` adds the border and title height it
+just measured, `start_controller`'s re-centre path passes `window_width`/`window_height` —
+because the Windows body calls `SetWindowPos` and settles against `GetWindowRect`. X11 has
+no window rect, so the Linux body must subtract `_NET_FRAME_EXTENTS` before configuring and
+add them back to settle. Sizing the client instead was self-consistent and therefore
+invisible: the function reported success while the outer rect was wrong by exactly the
+frame extents. Two live consequences, on a 28px KWin title bar: `try_resize_to` produced
+content one title bar too tall and then logged `resize hwnd failed` (so
+`check_resolution` raised its alert even though the WM had obeyed), and the re-centre path
+grew the window by 28px *per call*, 600x428 → 600x540 in four iterations, on the default
+`Auto Resize Game Window: True`. Dormant only where the extents are all zero, i.e.
+borderless-fullscreen.
+
+**C11. Centring outer dimensions is already correct — do not "fix" it.** A reparenting WM
+applies ICCCM `win_gravity` (NorthWest by default) to a `ConfigureRequest`, so the
+coordinates place the **frame**, and the client lands `left`/`top` inside it. Measured
+after C10: requested centre `(2950, 556)`, frame origin `(2950, 556)`. The review's
+proposed extent subtraction would have moved the window off-centre.
+
+**C12. Anything that parses a CLI tool's text output must pin the tool's locale.** `pactl`
+is localized: `LC_ALL=de_DE` turns `Sink Input #` into `Ziel-Eingabe #` and `Mute:` into
+`Stumm:`; zh_CN — most of ok-ww's userbase — says `信宿输入 #`. The parser returned `[]`
+from a command that exited 0 with output on stdout, so mute did nothing and nothing warned.
+`env={**os.environ, 'LC_ALL': 'C', 'LANGUAGE': ''}`; `LANGUAGE` overrides `LC_ALL` for
+gettext and has to be cleared too. Phase 3 and 4 add more subprocess parsing — this applies
+to all of it.
+
+**C13. A replyless X11 request cannot be checked by whether it raised.** `MapWindow`, a
+`ClientMessage` and `ConfigureWindow` all return nothing, and python-xlib routes their
+errors to the async error handler, never to the caller. `activate()` therefore returned
+True for a window id that had never existed. Any X11 primitive whose contract is "False if
+the WM refused" has to read the resulting state back — `activate` polls `is_active` for
+0.5s. §4/4d's foreground fallback depends on this being true, not optimistic.
+
+**C14. The WM's window lists only contain what the WM manages.** `_NET_CLIENT_LIST` holds
+managed clients and `WM_STATE` is a property the *WM* sets, so an override-redirect
+toplevel is in neither — the review's proposed union of sources 1 and 2 would not have
+found one. `list_clients` unions the root's own children instead and keeps
+override-redirect windows; the WM_STATE walk stays a fallback because it costs 6.0ms
+against 1.7ms for the other two. Cost of the change: `find_hwnd` 0.68ms → 2.45ms per call,
+~1.2% of the 0.2s poll. Still unproven against a fullscreen-exclusive Proton game —
+confirm alongside [GATE-1b]/[GATE-2].
+
+**C15. A drift gate that cannot fail is worse than no gate.**
+`test_every_upstream_method_is_inherited_or_overridden` asked
+`hasattr(X11Window, name)` for every name in `vars(HwndWindow)` — True by definition for a
+subclass, so `missing` was `[]` unconditionally, and §10 D1 advertised it as catching
+exactly the drift it could not see. It now walks upstream's AST for methods that reach
+Win32 (directly, through the module's own helpers, or through the `ok.util.window`
+contracts) and asserts each appears in `vars(X11Window)`; a companion test simulates
+upstream growing such a method. The constructor gate had a narrower version of the same
+problem — it collected only bare `self.x = ...` targets, missing tuple and annotated
+assignment, both of which upstream already uses elsewhere in that class.
+
+**C16. `find_hwnd` returning nothing is three different states and used to look like one.**
+"Game not running", "no `_NET_WM_PID`", and "`_NET_WM_PID` names a pid this process cannot
+see" all produced the same empty tuple in silence. The third is what
+SteamLinuxRuntime/pressure-vessel would produce, which is [GATE-1b]'s whole risk. Each
+rejection is now logged with its reason, rate-limited to once per 30 seconds — unthrottled
+it emitted five lines a second for as long as the game was not running.
+
+**C17. The ok-ww side had no CI at all.** Every workflow here is `windows-latest`, and
+`tools/check_linux_startup.py` — the only automated check that *this* app starts against
+the fork — was never run by anything. `.github/workflows/linux.yml` now runs it on
+`ubuntu-latest` under `xvfb-run`, against `requirements-linux.txt`, whose ok-script pin is
+a fork commit; a green run is therefore a statement about an exact pair of trees.
+
+**Verification state after the fixes.** Fork suite **436 passed / 6 failed / 1 skipped / 10
+subtests** — the six are §9b's Windows-only set, unchanged; `tests/test_x11_window.py` is
+60 tests, 11 of them live. The three drift gates stay green (27 module-level Win32
+offenders, 70/70 lazy imports, 94 `win32con` constants). The Phase 2 exit gate still prints
+`PASS  startup reaches capture-method selection`, selecting `BitBlt_True +
+PostMessageInteraction` as before.
 
 ---
 
