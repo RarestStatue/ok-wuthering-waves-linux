@@ -1764,6 +1764,26 @@ therefore be a statement about an exact pair of trees.
 >
 > The lesson is the one that outlives the YAML: **a workflow file is not CI.** This section
 > claimed a green gate on the strength of the file existing. Read the run.
+>
+> Getting to a green run took three attempts and neither of the other two was a new defect
+> — both were already true and unobservable. The fork `RarestStatue/ok-script-linux` was
+> **private** while ok-ww is public, so pip could not clone the pinned commit on a runner
+> (`could not read Username for 'https://github.com'`); it is public now. And the gate
+> itself failed — see C19.
+
+**C19. `do_start()` selects nothing on a first run, and the exit gate did not know.** It
+opens with `get_preferred_device()`, which reads `config['preferred']`; when that is unset
+it calls `set_preferred_device()` and **returns without selecting a capture method**, and
+the real app only recovers because that branch emits `communicate.adb_devices` and the UI
+re-enters start. `tools/check_linux_startup.py` called `do_start` once, and passed on the
+development machine only because `configs/` is gitignored and `configs/devices.json` there
+already held `"preferred": "pc"`. `rm -f configs/devices.json` reproduces CI exactly. So
+every `PASS  startup reaches capture-method selection` recorded in §10 and above was
+measured on a dirty config, and Phase 1's deferred criterion C9 was never demonstrated
+cold. The port was not wrong; the gate was claiming more than it checked. It drives both
+passes now. `GAPS.md` **P2-9b** has the reproduction. The general form, for the gates Phase
+3 and 5b will add: **a gate that reads state the repo does not ship is measuring the
+developer's machine.**
 
 **C18. A replyless X11 request is a *class* of defect, not one call.** C13 fixed
 `activate()` and left `x11.resize()` with the same lie — it returned True for a window id
