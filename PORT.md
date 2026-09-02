@@ -1748,18 +1748,43 @@ SteamLinuxRuntime/pressure-vessel would produce, which is [GATE-1b]'s whole risk
 rejection is now logged with its reason, rate-limited to once per 30 seconds — unthrottled
 it emitted five lines a second for as long as the game was not running.
 
-**C17. The ok-ww side had no CI at all.** Every workflow here is `windows-latest`, and
-`tools/check_linux_startup.py` — the only automated check that *this* app starts against
-the fork — was never run by anything. `.github/workflows/linux.yml` now runs it on
-`ubuntu-latest` under `xvfb-run`, against `requirements-linux.txt`, whose ok-script pin is
-a fork commit; a green run is therefore a statement about an exact pair of trees.
+**C17. The ok-ww side had no CI at all — and still effectively has none.** Every workflow
+here is `windows-latest`, and `tools/check_linux_startup.py` — the only automated check
+that *this* app starts against the fork — was never run by anything.
+`.github/workflows/linux.yml` was added to run it on `ubuntu-latest` under `xvfb-run`,
+against `requirements-linux.txt`, whose ok-script pin is a fork commit; a green run would
+therefore be a statement about an exact pair of trees.
 
-**Verification state after the fixes.** Fork suite **436 passed / 6 failed / 1 skipped / 10
-subtests** — the six are §9b's Windows-only set, unchanged; `tests/test_x11_window.py` is
-60 tests, 11 of them live. The three drift gates stay green (27 module-level Win32
-offenders, 70/70 lazy imports, 94 `win32con` constants). The Phase 2 exit gate still prints
+> **Correction (second-pass review, same day): the first version of that job never ran the
+> gate.** Its only run failed in 41s inside `actions/checkout`, because `submodules: true`
+> cannot resolve `ok_templates`' pinned commit — it is on no ref of the upstream repo any
+> more. Nothing downstream of checkout executed. Both `submodules` and `lfs` are dropped
+> now (the gate stops at capture-method selection and loads no template; the repo declares
+> no LFS filter), and `GAPS.md` **P2-9a** carries the log line and the evidence.
+>
+> The lesson is the one that outlives the YAML: **a workflow file is not CI.** This section
+> claimed a green gate on the strength of the file existing. Read the run.
+
+**C18. A replyless X11 request is a *class* of defect, not one call.** C13 fixed
+`activate()` and left `x11.resize()` with the same lie — it returned True for a window id
+that had never existed. `resize_window` was not fooled, because it settles against the real
+geometry, but it paid the full five-second settle loop to find out, on a path
+`try_resize_to` runs at startup (`resize_window(0x7fffffff, 500, 300)` -> False in 5.04s).
+Fixed in ok-script-linux `8cda739` by asking for the window's attributes — a *reply-bearing*
+request — at the top of the same `_call`, so a dead window raises `BadWindow` synchronously:
+5.04s -> 0.001s. When Phase 3 and 4 add X11 primitives, the rule is: if every request in the
+body is replyless, the return value is "sent", not "worked" — either read the state back or
+guard with something that does reply.
+
+**Verification state after the fixes.** Fork suite **438 passed / 6 failed / 1 skipped / 10
+subtests** at `8cda739` — the six are §9b's Windows-only set, unchanged;
+`tests/test_x11_window.py` is 62 tests, 13 of them live (436 / 60 / 11 at `9b33a03`, before
+C18 added two). The three drift gates stay green (27 module-level Win32
+offenders, 70/70 lazy imports, the `win32con` constants). The Phase 2 exit gate still prints
 `PASS  startup reaches capture-method selection`, selecting `BitBlt_True +
-PostMessageInteraction` as before.
+PostMessageInteraction` as before. All of it re-measured independently in a second pass —
+every number here reproduces, and the second pass' own four findings (the C17 correction
+above, plus three smaller ones) are in `GAPS.md` under *Phase 2 — second pass*.
 
 ---
 
