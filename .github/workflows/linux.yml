@@ -26,10 +26,15 @@ jobs:
     name: ok-ww starts on Linux
     runs-on: ubuntu-latest
     steps:
+      # No `submodules` and no `lfs`, deliberately. `ok_templates` is pinned to
+      # 515962ce, which is on no ref of the upstream labeling repo any more, so
+      # `submodules: true` fails the whole job in `actions/checkout` with
+      # `upload-pack: not our ref` before anything is installed -- which is exactly how
+      # the first version of this workflow "ran" the gate: it never did. The gate stops at
+      # capture-method selection and never loads a template, and it passes locally with
+      # `ok_templates/` empty. `.gitattributes` declares no `filter=lfs`, so `lfs: true`
+      # fetched nothing either.
       - uses: actions/checkout@v4
-        with:
-          submodules: true
-          lfs: true
 
       - uses: actions/setup-python@v5
         with:

@@ -1,9 +1,17 @@
 # GAPS
 
-> **Resolved 2026-09-01.** Every Phase 2 finding below was fixed and each fix verified by
-> execution, on this machine's real KWin/Xwayland desktop. The code fixes are in
-> ok-script-linux `9b33a03` (branch `linux-port`); the CI job and the lock repin are in
-> this repo.
+> **Resolved 2026-09-01, and re-verified independently the same day.** Nine of the ten
+> Phase 2 findings below were fixed, and each fix was re-measured from scratch on this
+> machine's real KWin/Xwayland desktop by a second pass that trusted none of the numbers
+> in this file. **P2-9 was the exception** — its workflow had never run green — and it is
+> fixed now. The code fixes are in ok-script-linux `9b33a03` and `8cda739` (branch
+> `linux-port`); the CI job and the lock repin are in this repo.
+>
+> The second pass found four more. **P2-9a and P2-13 are now fixed too** (ok-script-linux
+> `8cda739` and this repo's workflow + lock repin); **P2-11 and P2-12 stay open** for the
+> next model. All four are written up in
+> **[Phase 2 — second pass](#phase-2--second-pass-2026-09-01)**. None of them were
+> regressions from the nine fixes.
 >
 > | | Outcome |
 > |---|---|
@@ -14,8 +22,8 @@
 > | P2-5 | fixed — `_init_attributes` walks `AnnAssign` and recurses into tuple/list targets, with a test over all three shapes |
 > | P2-6 | fixed — every rejected window is reported with its reason, rate-limited to once per 30s because this runs on the 0.2s poll thread (the unthrottled version emitted five lines a second for the whole time the game is not running) |
 > | P2-7 | fixed, and the proposed one-liner was **not enough**. Unioning the WM_STATE walk would not have found an override-redirect window either: `WM_STATE` is a property the *WM* sets, so both source 1 and source 2 see only managed clients. The root-children source is unioned in instead, and keeps override-redirect windows. Still unverified against the real game — the live test creates its own override-redirect toplevel and asserts the WM does not list it |
-> | P2-8 | fixed — and the numbers moved anyway: the file is 60 tests, 11 of them live, `49 passed, 11 skipped` with no `DISPLAY` |
-> | P2-9 | fixed — `.github/workflows/linux.yml` in this repo runs the gate on `ubuntu-latest` under `xvfb-run` |
+> | P2-8 | fixed — and the numbers moved anyway: the file is 62 tests, 13 of them live, `49 passed, 13 skipped` with no `DISPLAY` (60/11 at `9b33a03`, before P2-13 added two) |
+> | P2-9 | fixed on the second attempt. The first `.github/workflows/linux.yml` was correct in shape but its only run (`33585991431`, push of `0b62a6b`) failed in 41s at `actions/checkout` — `submodules: true` cannot resolve `ok_templates`. Both `submodules` and `lfs` are dropped; see P2-9a |
 > | P2-10 | fixed — `WM_NAME` decodes as Latin-1, `_NET_WM_NAME` stays UTF-8 |
 >
 > Two things the fixes cost, both measured and both accepted: `list_clients` went 0.05ms ->
@@ -414,12 +422,13 @@ interpreter.
 
 # What shipped
 
-All ten Phase 2 findings are closed; the table at the top of this file records each
-outcome, and `PORT.md` §10b records the corrections worth keeping. What is **not** closed
-is P2-7's underlying question and the two gates it belongs to: `list_clients` now
-enumerates override-redirect toplevels, but no one has yet pointed it at a
-fullscreen-exclusive Proton game. That belongs to the same session that answers
-[GATE-1b] and [GATE-2], along with the mute path's descendant-pid fallback.
+Nine of the ten Phase 2 findings are closed; the table at the top of this file records
+each outcome, and `PORT.md` §10b records the corrections worth keeping. **P2-9 is not
+closed** — see P2-9a below. What is also **not** closed is P2-7's underlying question and
+the two gates it belongs to: `list_clients` now enumerates override-redirect toplevels,
+but no one has yet pointed it at a fullscreen-exclusive Proton game. That belongs to the
+same session that answers [GATE-1b] and [GATE-2], along with the mute path's
+descendant-pid fallback.
 
 The original order, kept for the record:
 
@@ -438,4 +447,236 @@ The original order, kept for the record:
 None of these block Phase 3. P2-1 and P2-2 should land before it.
 
 *(All ten landed before it, in one change: ok-script-linux `9b33a03`, plus this repo's CI
-job and lock repin.)*
+job and lock repin. Nine of them work; P2-9's job never ran — P2-9a.)*
+
+---
+
+# Phase 2 — second pass (2026-09-01)
+
+An independent re-verification of the `9b33a03` patch set. Nothing in the table above was
+taken on trust: every fix was re-driven against a live window on this machine's
+KWin/Xwayland desktop, and every count was re-run. State reviewed: ok-script-linux
+`9b33a03`, ok-ww `0b62a6b` (`master`), same venv (`/home/max/vsCODE/okport-venv`).
+
+## What reproduces
+
+| Claim | Re-measured |
+|---|---|
+| Fork suite `436 passed / 6 failed / 1 skipped / 10 subtests` | exact, and the 6 are §9b's Windows-only set (`test_device_manager` ×2, `test_process`, `test_task_ui`, `test_web_server` ×2) |
+| `tests/test_x11_window.py` is 60 tests, 11 live | exact: `60 passed` with `DISPLAY`, `49 passed, 11 skipped` without |
+| Four tests need a WM | exact: `_wm_present()` gates lines 1043, 1070, 1102, 1123 — iconify, de-iconify, and the two `resize_window` ones |
+| `scan_module_level_win32.py --check` / `check_linux_imports.py` | exit 0; 27 offenders, 70/70 resolved |
+| `tools/check_linux_startup.py` | `PASS startup reaches capture-method selection`, `BitBlt_True + PostMessageInteraction`, both monitor rects |
+| Linux lock repinned | `requirements-linux.txt:35` → `@9b33a03d…`; `opencv-python==5.0.0.93` is pinned here, so the fork's separate opencv CI step has no ok-ww equivalent to add |
+| **P2-1a** outer contract | `resize_window(wid, 500, 328)` on a 28px-title-bar window → `True`, `get_window_bounds` = `(2950, 584, 500, 328, 500, 300, 1.0)`. Window rect exactly 500x328, content exactly 500x300 |
+| **P2-1b** re-centre stability | four iterations of `resize_window(hwnd, window_width, window_height)`: `(500,328,500,300)` every time. Was +28px per call |
+| **P2-1c** centring | monitor `(1920,0,4480,1440)`, expected frame origin `(2950,556)`, client origin `(2950,584)`, delta `(0,28)` = `(left,top)`. The "do not subtract" correction is right |
+| **P2-2** pactl locale | under `LC_ALL=de_DE.UTF-8 LANGUAGE=de`: pinned `_pactl` parses `[('72',0,False),('415',32472,False)]`, an unpinned `subprocess.run` parses `[]` with header `'Ziel-Eingabe #72'` |
+| **P2-3** activate | `x11.activate(0x7fffffff)` → `False` after 0.5s with `did not grant focus` at debug; a real window → `True` in 0.00s with `is_active` True |
+| **P2-4** method gate | taint analysis finds 9 Win32-bound upstream methods (`__init__`, `bring_to_front`, `do_update_window_size`, `handle_mute`, `hwnd_title`, `is_foreground`, `try_resize_to`, `update_window_size`, `validate_mute_config`); `inherited-and-tainted` is `[]`, and the 9 it leaves alone are exactly the pure ones the module docstring names |
+| **P2-5** constructor gate | `{'a','b','c','d'}` over the three assignment shapes |
+| **P2-6** rejection reporting | live miss logged one line naming three windows with per-window reasons, once per 30s |
+| **P2-7** override-redirect | a hand-built override-redirect toplevel is in `list_clients()` and **not** in `_NET_CLIENT_LIST` |
+| **P2-10** `WM_NAME` | with `_NET_WM_NAME` deleted and `WM_NAME` set to Latin-1 bytes, `get_name` → `'Wuthering Wavés'` |
+| Cost | `list_clients` 1.87 ms/call, `find_hwnd` 2.88 ms/call — the table's 1.8/2.45 ms, on a desktop with a few more windows open |
+
+## P2-9a — the Phase 2 exit-gate workflow fails at checkout and has never run the gate [automation, fix first] — **FIXED**
+
+`.github/workflows/linux.yml` is the fix for P2-9. Its only run — `33585991431`, on the
+push of `0b62a6b` — **failed in 41 seconds**, in `actions/checkout@v4`, before `pip
+install` and long before the gate:
+
+```
+Submodule 'ok_templates' (…/ok-wuthering-waves-coco-labeling.git) registered for path 'ok_templates'
+Cloning into '…/ok_templates'...
+##[error]fatal: remote error: upload-pack: not our ref 515962cee85a1c45caaa13749f9da6c80c75efcc
+##[error]fatal: Fetched in submodule path 'ok_templates', but it did not contain 515962cee85a1c45caaa13749f9da6c80c75efcc. Direct fetching of that commit failed.
+##[error]The process '/usr/bin/git' failed with exit code 128
+```
+
+So P2-9's claim in the table above — "the gate runs on `ubuntu-latest` under `xvfb-run`" —
+describes a job that has never executed a single line of it. Everything downstream of
+checkout (the apt list, the `requirements-linux.txt` install, `xvfb-run`, the gate under
+Xvfb-with-no-WM) is still unproven.
+
+The pinned submodule commit is unreachable, not merely un-shallow-fetchable:
+
+```
+$ git ls-remote https://github.com/ok-oldking/ok-wuthering-waves-coco-labeling.git
+d1b4ed8c1ca9e145c514853c14030a7358afe12c  HEAD
+d1b4ed8c1ca9e145c514853c14030a7358afe12c  refs/heads/master
+… (only refs/pull/*, none of them 515962ce)
+```
+
+`git submodule status` here reports `-515962ce…` — the leading `-` means never
+initialized. Adding `fetch-depth` will not help: no ref on the remote reaches that commit.
+This is inherited repo breakage, not something Phase 2 introduced; `build.yml` and
+`test.yml` carry the same `submodules: true` and would hit it too, which is invisible only
+because neither has ever run on this fork (`gh run list` returns exactly one row, the
+failure above).
+
+**Fix:** drop `submodules: true` and `lfs: true` from `.github/workflows/linux.yml`. The
+gate does not need either, which is not a guess:
+
+* `ok_templates/` is empty on this machine (the submodule was never initialized) and
+  `python tools/check_linux_startup.py` still prints `PASS`. The gate stops at
+  capture-method selection; template loading is a task-time concern.
+* `.gitattributes` is one line (`.github/workflows/*.lock.yml linguist-generated=true
+  merge=ours`) and declares no `filter=lfs`, so `lfs: true` fetches nothing.
+
+Then push and **read the run**. A green P2-9 is the run, not the file. Do not mark P2-9
+fixed again on the strength of the YAML existing — that is the exact mistake this finding
+records.
+
+> **Fixed.** Both `submodules: true` and `lfs: true` are gone from
+> `.github/workflows/linux.yml`, with the reason in a comment above the step so nobody adds
+> them back. See the run recorded at the end of this section — the file's existence is not
+> the evidence; the green job is.
+
+## P2-11 — `list_clients`' new root-children source is unmeasured on a *reparenting* WM [cost/diagnosability]
+
+Every measurement behind P2-7 was taken on this session's `kwin_wayland`, which does **not**
+reparent X11 clients — verified: every id in `_NET_CLIENT_LIST` is a direct child of the
+root, and `list_clients()` returned 4 ids against a `_NET_CLIENT_LIST` of 3 (the one extra
+being the test's own override-redirect window). Under a *classic* reparenting WM
+(`kwin_x11`, Mutter on X11, Xfwm, Openbox — all plausible for a Proton gaming session) the
+root's children are the WM's **frames**, and the clients live one level down. Source 3
+then adds one frame per managed window on top of source 1's clients.
+
+Simulated by hand-building the shape (a root-child frame with the client reparented
+inside it):
+
+```
+frame in list_clients : True
+client in list_clients: False   # would be True via _NET_CLIENT_LIST under a real WM
+…: 77594624 (''): no _NET_WM_PID
+```
+
+Not a correctness bug — the real client still arrives from `_NET_CLIENT_LIST`, and a frame
+carries no `_NET_WM_PID` and no name, so it falls out at the first filter exactly as
+`ok/compat/x11.py`'s docstring says. But two claims in the table above are narrower than
+they read: the `1.8 ms` / `2.45 ms` costs roughly double on such a WM (one extra
+`get_wm_state` + `get_name` + `get_pid` round trip per managed window), and P2-6's
+rejection log gains a `no _NET_WM_PID` line per managed window, which is noise in the one
+message whose whole purpose is signal.
+
+**Fix (optional, and only if the numbers justify it — measure first on a reparenting WM):**
+in `_walk_for_clients`' sibling loop in `ok/compat/x11.py:~200`, skip a root child that has
+no `WM_STATE` **and** no `_NET_WM_PID` **and** whose own children include a window already
+in `seen` — i.e. it is a frame around a client source 1 already gave us. Cheaper
+alternative: leave the enumeration alone and drop `no _NET_WM_PID` rejects from the
+`find_hwnd` message when the window is also unnamed, since an unnamed pid-less toplevel is
+never the game. Either way, record the reparenting-WM measurement in `PORT.md` §10b C14,
+whose cost figures currently generalise from a non-reparenting compositor.
+
+## P2-12 — two cosmetic defects in P2-6's rejection message [diagnosability, cheap]
+
+Both reproduced against the fakes in `tests/test_x11_window.py`.
+
+**(a) One window can produce two reject lines.** `ok/compat/window_x11.py:~330`:
+
+```python
+candidates, cmdline = _exe_candidates(pid)
+if not candidates and not cmdline:
+    rejects.append(f'{hwnd} ({text!r}): pid {pid} is not resolvable in /proc')   # no `continue`
+```
+
+Control falls through into the `exe_names` branch, which appends a second line for the
+same window:
+
+```
+… 20971521 ('Ghost'): pid 4242 is not resolvable in /proc; 20971521 ('Ghost'): pid 4242 [] does not match ['game.exe']
+```
+
+The first line is the real diagnosis (this is the [GATE-1b] pressure-vessel shape); the
+second is noise that reads like a different window. **Fix:** `continue` after the
+unresolvable-pid append. Note the message is then *only* emitted on that path, which is
+what makes it worth having.
+
+**(b) A title-only miss logs an empty reason list.** The `title` filter `continue`s after
+`toplevels += 1` without appending a reject, so when every window is filtered by title the
+message ends in a dangling separator:
+
+```
+"find_hwnd matched none of 1 toplevel windows (title='Wuthering Waves' exe_names=None player_id=-1): "
+```
+
+Unreachable from ok-ww today (it passes `title=None`), reachable from any other app
+built on the fork. **Fix:** append a reject on the title mismatch too
+(`f'{hwnd} ({text!r}): title does not match {title!r}'`), or build the message with
+`'; '.join(rejects) or 'no window passed the title filter'`.
+
+## P2-13 — `x11.resize()` has the same replyless-request lie P2-3 fixed in `activate()` [contract] — **FIXED**
+
+`ok/compat/x11.py:512`. The docstring says *"False on refusal; the WM may clamp or ignore
+either"*, and the body issues one `ConfigureWindow` — replyless, like the three P2-3
+identified — then `d.sync()` and `return True`. P2-3's own evidence recorded this
+(`x11.resize(0x7fffffff, 100, 100) -> True`) and the patch fixed only `activate`. Still
+true at `9b33a03`:
+
+```
+x11.exists(0x7fffffff) -> False
+x11.resize(0x7fffffff,100,100) -> True        # docstring says False on refusal
+```
+
+**Impact is bounded**, because `resize_window` now settles against the real geometry and
+so cannot be fooled — but it pays the full timeout to find out:
+
+```
+resize_window(0x7fffffff, 500, 300) -> False, took 5.04s
+```
+
+Five seconds on the caller's thread for an answer `x11.exists()` gives in under a
+millisecond. `try_resize_to` runs it inside `do_update_window_size`'s path at startup.
+
+**Fix:** either (a) make the docstring honest — say the return value only reports that the
+request was *sent*, and that the caller must read the geometry back, which is what
+`resize_window` already does; or (b) guard the body with `if not exists(wid): return
+False`, which costs one round trip and turns the 5.04s into ~1ms. (b) is preferable and is
+the same shape as `bring_to_front`'s existing `x11.exists` guard. Do **not** make `resize`
+poll the geometry itself — `resize_window` owns the settle loop and would then poll twice.
+
+**Add a regression test** next to `test_activate_reports_a_refusal_rather_than_assuming_success`
+(`tests/test_x11_window.py:1140`), asserting `x11.resize(bogus, …)` is False.
+
+> **Fixed** in ok-script-linux `8cda739`, and option (b) is what landed — with one
+> refinement: rather than calling `exists()` (a second `_call`, a second lock acquisition),
+> the guard is `win.get_attributes()` at the top of `resize`'s own `run(d)`. It is
+> reply-bearing, so a dead window raises `BadWindow` synchronously inside the `_call` that
+> was going to happen anyway, and `_call` maps it to False. Measured after:
+>
+> ```
+> x11.resize(0x7fffffff, 100, 100)      -> False
+> resize_window(0x7fffffff, 500, 300)   -> False in 0.001s   (was False in 5.04s)
+> ```
+>
+> Two tests, both live: `test_resizing_a_window_that_does_not_exist_fails_fast` asserts the
+> False and that `resize_window` returns in under 2s, and
+> `test_resizing_a_live_window_still_succeeds` asserts the guard did not turn a real resize
+> into a refusal. Suite after: **438 passed, 6 failed, 1 skipped, 10 subtests**; the file is
+> 62 tests, 13 live.
+
+## Suggested order (second pass)
+
+1. ~~**P2-9a**~~ — done. The only finding that left a *previous* finding falsely marked
+   fixed, and it blocked every other CI claim.
+2. ~~**P2-13**~~ — done. A 5-second stall on the startup path; one guard, two tests.
+3. **P2-12** — two lines, in the message that exists to be read at 3am. **Open.**
+4. **P2-11** — measure on a reparenting WM before changing anything; may turn out to be
+   documentation only. **Open.**
+
+Neither open item blocks Phase 3.
+
+## Second-pass verification state
+
+ok-script-linux `8cda739` (branch `linux-port`, pushed), ok-ww master with the workflow fix
+and the lock repinned to `8cda739`.
+
+* Fork suite **438 passed / 6 failed / 1 skipped / 10 subtests** — the six are §9b's
+  Windows-only set, unchanged.
+* `tests/test_x11_window.py`: **62 passed** with `DISPLAY`, **49 passed / 13 skipped**
+  without.
+* `tools/scan_module_level_win32.py --check` exit 0 (27 offenders),
+  `tools/check_linux_imports.py` exit 0 (70/70), the `win32con` constant gate 4 passed.
+* `tools/check_linux_startup.py` still prints `PASS  startup reaches capture-method
+  selection`.
