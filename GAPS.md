@@ -7,11 +7,25 @@
 > fixed now. The code fixes are in ok-script-linux `9b33a03` and `8cda739` (branch
 > `linux-port`); the CI job and the lock repin are in this repo.
 >
-> The second pass found four more. **P2-9a and P2-13 are now fixed too** (ok-script-linux
-> `8cda739` and this repo's workflow + lock repin); **P2-11 and P2-12 stay open** for the
-> next model. All four are written up in
+> The second pass found four more. **P2-9a, P2-9b and P2-13 are now fixed too**
+> (ok-script-linux `8cda739` and this repo's workflow + lock repin); P2-11 and P2-12 stayed
+> open until the fourth pass below closed them. All four are written up in
 > **[Phase 2 — second pass](#phase-2--second-pass-2026-09-01)**. None of them were
 > regressions from the nine fixes.
+>
+> **Third pass, 2026-09-01 (same day): every "fixed" claim above re-verified from the
+> code and re-executed; both open findings re-reproduced.** See
+> **[Third pass — patch verification](#third-pass--patch-verification-2026-09-01)** for
+> what was checked and how. P2-11 and P2-12 were the only work left, and both were written
+> up below as drop-in patches — exact file, exact line, exact body, exact tests.
+>
+> **Fourth pass, 2026-09-02: both are now fixed, and Phase 2 has no open findings.**
+> P2-12 went in exactly as specified (`c23646d`). P2-11's blocking measurement turned out
+> not to be blocked — a nested `Xwayland :9` and a ~50-line reparenting WM reproduce the
+> shape with no root and no package — and it resolved to a code fix, not documentation
+> (`4ca767e`). Fork suite **445 passed / 6 failed / 1 skipped**, `test_x11_window.py`
+> **69 passed** (56/13 with no `DISPLAY`), every gate green including the cold startup
+> gate. See **[Fourth pass](#fourth-pass--the-last-two-findings-closed-2026-09-02)**.
 >
 > | | Outcome |
 > |---|---|
@@ -25,6 +39,8 @@
 > | P2-8 | fixed — and the numbers moved anyway: the file is 62 tests, 13 of them live, `49 passed, 13 skipped` with no `DISPLAY` (60/11 at `9b33a03`, before P2-13 added two) |
 > | P2-9 | fixed on the second attempt. The first `.github/workflows/linux.yml` was correct in shape but its only run (`33585991431`, push of `0b62a6b`) failed in 41s at `actions/checkout` — `submodules: true` cannot resolve `ok_templates`. Both `submodules` and `lfs` are dropped; see P2-9a |
 > | P2-10 | fixed — `WM_NAME` decodes as Latin-1, `_NET_WM_NAME` stays UTF-8 |
+> | P2-11 | fixed — measured on a nested `Xwayland :9` under a purpose-written reparenting WM (10 clients): `find_hwnd` 3.17ms non-reparenting, 5.28ms reparenting, **3.93ms** after the fix, and 10 pure-noise `no _NET_WM_PID` reject lines gone. `list_clients` drops a frame whose child it already has, and only that shape, so P2-7's override-redirect window survives |
+> | P2-12 | fixed — an unresolvable pid reports once instead of twice, and a title-only miss says which title did not match instead of ending on a dangling `: ` |
 >
 > Two things the fixes cost, both measured and both accepted: `list_clients` went 0.05ms ->
 > 1.8ms and `find_hwnd` 0.68ms -> 2.45ms per call (~1.2% of the 0.2s poll), because the
@@ -590,7 +606,14 @@ both ways on this machine — cold (`rm -f configs/devices.json`) it prints `fir
 only set the preferred device; re-entering as the app does` and then `PASS`; warm it takes
 the single-pass path and prints `PASS` as before.
 
-## P2-11 — `list_clients`' new root-children source is unmeasured on a *reparenting* WM [cost/diagnosability]
+## P2-11 — `list_clients`' new root-children source is unmeasured on a *reparenting* WM [cost/diagnosability] — **MEASURED AND FIXED**
+
+> **Closed 2026-09-02 (fourth pass).** The blocking measurement was taken — not by
+> installing a reparenting WM, which still is not possible here, but by writing one
+> against a nested `Xwayland :9`. Outcome **2** of the three below: the cost and the log
+> noise both turned out to be real, and one predicate removes both. ok-script-linux
+> `4ca767e`. Numbers, the harness, and why the two obvious predicates are wrong are in
+> **[Fourth pass](#fourth-pass--the-last-two-findings-closed-2026-09-02)**.
 
 Every measurement behind P2-7 was taken on this session's `kwin_wayland`, which does **not**
 reparent X11 clients — verified: every id in `_NET_CLIENT_LIST` is a direct child of the
@@ -617,51 +640,275 @@ they read: the `1.8 ms` / `2.45 ms` costs roughly double on such a WM (one extra
 rejection log gains a `no _NET_WM_PID` line per managed window, which is noise in the one
 message whose whole purpose is signal.
 
-**Fix (optional, and only if the numbers justify it — measure first on a reparenting WM):**
-in `_walk_for_clients`' sibling loop in `ok/compat/x11.py:~200`, skip a root child that has
-no `WM_STATE` **and** no `_NET_WM_PID` **and** whose own children include a window already
-in `seen` — i.e. it is a frame around a client source 1 already gave us. Cheaper
-alternative: leave the enumeration alone and drop `no _NET_WM_PID` rejects from the
-`find_hwnd` message when the window is also unnamed, since an unnamed pid-less toplevel is
-never the game. Either way, record the reparenting-WM measurement in `PORT.md` §10b C14,
-whose cost figures currently generalise from a non-reparenting compositor.
+> **Correction, third pass: the fix location named in the original write-up was wrong.**
+> It said "`_walk_for_clients`' sibling loop in `ok/compat/x11.py:~200`". That is
+> **source 2**, not source 3: `_walk_for_clients` is at `x11.py:161` and only runs when
+> `_NET_CLIENT_LIST` is absent or empty (`x11.py:216-221`), which is never the case on a
+> WM that has this problem. **Source 3 — the one that adds the frames — is the root-children
+> loop inside `list_clients` itself, `ok/compat/x11.py:223-232`:**
+>
+> ```python
+>         for child in root.query_tree().children:
+>             if child.id in seen:
+>                 continue
+>             try:
+>                 attributes = child.get_attributes()
+>                 if (attributes.map_state == Xlib.X.IsViewable
+>                         and attributes.win_class == Xlib.X.InputOutput):
+>                     add(child.id)
+>             except Exception:
+>                 continue
+> ```
+>
+> `seen` is the local set built by `add()` a few lines above (`x11.py:210-215`), already
+> holding every id from sources 1 and 2, so the "is this a frame around a client we
+> already have" test is `any(c.id in seen for c in child.query_tree().children)` — no
+> extra bookkeeping needed. Note the loop skips `child.id in seen` first, which is why a
+> *non*-reparenting WM is unaffected: there the clients themselves are the root's children
+> and are already in `seen`.
 
-## P2-12 — two cosmetic defects in P2-6's rejection message [diagnosability, cheap]
+**Measure before changing anything. Nothing here is measured yet, and this machine cannot
+measure it:** the session is `kwin_wayland --xwayland` (KDE/Wayland), which does not
+reparent, and **no reparenting WM and no nested/virtual X server is installed** — checked
+2026-09-01 for `openbox`, `xfwm4`, `marco`, `metacity`, `mutter`, `i3`, `fluxbox`, `jwm`,
+`icewm`, `twm`, `blackbox`, `Xephyr`, `Xvfb`; none present. So step 1 is to install one
+(`sudo dnf install xorg-x11-server-Xephyr openbox` on this Fedora box), then:
 
-Both reproduced against the fakes in `tests/test_x11_window.py`.
+```sh
+Xephyr :9 -screen 1280x1024 &
+DISPLAY=:9 openbox &
+DISPLAY=:9 xterm &                      # or any client, to give the WM something to frame
+V=/home/max/vsCODE/okport-venv
+cd /home/max/vsCODE/ok-script-linux
+DISPLAY=:9 $V/bin/python - <<'EOF'
+import subprocess, time
+from ok.compat import x11
+clients = x11.list_clients()
+print('list_clients  ', [hex(w) for w in clients], len(clients))
+print(subprocess.run(['xprop', '-root', '_NET_CLIENT_LIST'],
+                     capture_output=True, text=True).stdout.strip())
+for wid in clients:
+    print(hex(wid), 'wm_state', x11.get_wm_state(wid), 'pid', x11.get_pid(wid),
+          'name', repr(x11.get_name(wid)))
+t = time.time()
+for _ in range(50):
+    x11.list_clients()
+print(f'list_clients {(time.time()-t)/50*1000:.2f} ms/call')
+EOF
+```
 
-**(a) One window can produce two reject lines.** `ok/compat/window_x11.py:~330`:
+There is **no** `x11.get_root()` — `_NET_CLIENT_LIST` is read off the root inside
+`list_clients` and is not exposed, which is why the snippet shells out to `xprop`. The
+comparison that matters is `len(list_clients())` against the number of ids `xprop` prints
+(the surplus is the frames), plus the per-call cost. Every helper used above exists at
+`8cda739`: `get_property:155`, `get_pid:247`, `get_wm_state:315`, `get_name:261`.
+This exact snippet was run on the non-reparenting session and works.
+
+For reference, the same measurement on this non-reparenting session, third pass:
+`list_clients` **2.10 ms/call** with 2 clients. The write-up's prediction is that a
+reparenting WM roughly doubles the per-managed-window cost and adds one
+`no _NET_WM_PID` line per managed window to P2-6's message.
+
+**Then, and only then, one of three outcomes:**
+
+1. Cost is unchanged in practice (few toplevels) → **documentation only**: record the
+   reparenting-WM number in `PORT.md` §10b C14, whose cost figures currently generalise
+   from a non-reparenting compositor, and close this finding.
+2. Cost matters → skip frames in the `x11.py:223-232` loop, per the corrected code
+   location above.
+3. Only the log noise matters → leave the enumeration alone and drop `no _NET_WM_PID`
+   rejects from `find_hwnd`'s message (`ok/compat/window_x11.py:331`) when the window is
+   also unnamed, since an unnamed pid-less toplevel is never the game.
+
+**Whichever is chosen, do not regress P2-7.** `tests/test_x11_window.py` has a live test
+that hand-builds an override-redirect toplevel and asserts it is in `list_clients()` and
+not in `_NET_CLIENT_LIST`; an override-redirect window has no `WM_STATE` and no
+`_NET_WM_PID` either, so a frame-skip predicate that omits the "its children are already
+in `seen`" clause will delete exactly the window P2-7 was fixed to find.
+
+## P2-12 — two cosmetic defects in P2-6's rejection message [diagnosability, cheap] — **FIXED**
+
+Both re-reproduced on 2026-09-01 (third pass) against ok-script-linux `8cda739`, using
+`tests/test_x11_window.py`'s own `FakeX11` harness. Verbatim output of both repros is
+below; the exact patch and the exact tests follow. All line numbers are `8cda739`.
+
+**File:** `/home/max/vsCODE/ok-script-linux/ok/compat/window_x11.py`, inside
+`find_hwnd` (`def find_hwnd` at line **282**; the reject-collecting loop is lines
+**313-372**).
+
+### (a) One window produces two reject lines
+
+`window_x11.py:333-336` today:
 
 ```python
-candidates, cmdline = _exe_candidates(pid)
-if not candidates and not cmdline:
-    rejects.append(f'{hwnd} ({text!r}): pid {pid} is not resolvable in /proc')   # no `continue`
+        candidates, cmdline = _exe_candidates(pid)
+        if not candidates and not cmdline:
+            rejects.append(f'{hwnd} ({text!r}): pid {pid} is not resolvable in /proc')
+
+        if exe_names:
 ```
 
-Control falls through into the `exe_names` branch, which appends a second line for the
-same window:
+There is no `continue`, so control falls into the `exe_names` branch (line 337) and
+appends a second line for the same window. Reproduced — one window, `pid=4242`
+unresolvable, `exe_names=['game.exe']`:
 
 ```
-… 20971521 ('Ghost'): pid 4242 is not resolvable in /proc; 20971521 ('Ghost'): pid 4242 [] does not match ['game.exe']
+find_hwnd matched none of 1 toplevel windows (title=None exe_names=['game.exe'] player_id=-1): 20971521 ('Ghost'): pid 4242 is not resolvable in /proc; 20971521 ('Ghost'): pid 4242 [] does not match ['game.exe']
 ```
 
-The first line is the real diagnosis (this is the [GATE-1b] pressure-vessel shape); the
-second is noise that reads like a different window. **Fix:** `continue` after the
-unresolvable-pid append. Note the message is then *only* emitted on that path, which is
-what makes it worth having.
+The first line is the real diagnosis — this is the [GATE-1b] pressure-vessel shape. The
+second reads like a different window.
 
-**(b) A title-only miss logs an empty reason list.** The `title` filter `continue`s after
-`toplevels += 1` without appending a reject, so when every window is filtered by title the
-message ends in a dangling separator:
+**Do not add a bare `continue`.** It would be a behaviour change, not a cosmetic one:
+when `exe_names` is falsy the `elif candidates:` / `else` arms at lines 343-346 let a
+window with an unresolvable pid still match with `name, full_path = "", ""`. ok-ww always
+passes `exe_names`, but the fork is a library and other apps do not have to. Guard the
+skip on `exe_names` being truthy, where it is provably a no-op (an unresolvable pid has
+no candidates, so `_match_exe_names` returns `None` and the loop was going to `continue`
+one branch later anyway):
+
+```python
+        candidates, cmdline = _exe_candidates(pid)
+        if not candidates and not cmdline:
+            rejects.append(f'{hwnd} ({text!r}): pid {pid} is not resolvable in /proc')
+            if exe_names:
+                # An unresolvable pid can never match `exe_names`, and the generic
+                # "does not match []" line below would then report the same window twice
+                # with the weaker of the two reasons. Skipping here is a no-op for the
+                # match itself. With `exe_names` unset the window is still a candidate
+                # (`name`/`full_path` fall back to ''), so do not skip it there.
+                continue
+
+        if exe_names:
+```
+
+### (b) A title-only miss logs an empty reason list
+
+`window_x11.py:322-327` `continue`s on a title mismatch after `toplevels += 1` (line 319)
+without appending a reject, so when every window is filtered by title `rejects` is empty
+and `'; '.join(rejects)` leaves a dangling separator. Reproduced — one window named
+`'Other'`, `title='Wuthering Waves'`, `exe_names=None`:
 
 ```
 "find_hwnd matched none of 1 toplevel windows (title='Wuthering Waves' exe_names=None player_id=-1): "
 ```
 
-Unreachable from ok-ww today (it passes `title=None`), reachable from any other app
-built on the fork. **Fix:** append a reject on the title mismatch too
-(`f'{hwnd} ({text!r}): title does not match {title!r}'`), or build the message with
-`'; '.join(rejects) or 'no window passed the title filter'`.
+Unreachable from ok-ww today (`X11Window.__init__` passes `title=None`; confirmed at
+`ok/device/capture_methods/x11_window.py`), reachable from any other app on the fork.
+Replace lines **322-327**:
+
+```python
+        if title:
+            if isinstance(title, str):
+                title_matched = title == text
+            else:
+                title_matched = bool(re.search(title, text))
+            if not title_matched:
+                rejects.append(f'{hwnd} ({text!r}): title does not match {title!r}')
+                continue
+```
+
+and make the join defensive at line **372**, so no future filter can reintroduce the
+dangling separator:
+
+```python
+                        + ('; '.join(rejects) or 'no window passed the filters'))
+```
+
+`re` is already imported (`window_x11.py:1-45`); `title` may be a `str` or a compiled
+pattern — that is upstream's contract and the rewrite preserves both arms exactly.
+
+### Tests to add
+
+In `tests/test_x11_window.py`, class `TestFindHwnd` (line **136**), immediately after
+`test_a_miss_says_why_once_rather_than_five_times_a_second` (lines **244-265**) and
+before `test_player_id_filters_on_the_command_line` (line **267**). `run_find` (line
+**141**) does not capture the log, so these use the same explicit `mock.patch` shape as
+the P2-6 test above them — including `_last_no_match_log=0`, without which the 30s
+rate limit swallows the second test's message.
+
+```python
+    def test_an_unresolvable_pid_is_reported_once_not_twice(self):
+        """[P2-12a] The pressure-vessel shape [GATE-1b] is the diagnosis; the generic
+        `does not match` line for the same window is noise that reads like another one."""
+        from ok.compat import window_x11
+        fake = FakeX11([FakeWindow(0x1400001, pid=4242, name='Ghost')])
+
+        with unittest.mock.patch.object(window_x11, 'x11', fake), \
+                unittest.mock.patch.object(window_x11, '_exe_candidates', return_value=([], [])), \
+                unittest.mock.patch.object(window_x11, '_last_no_match_log', 0), \
+                unittest.mock.patch.object(window_x11.logger, 'info') as info:
+            self.assertEqual(0, window_x11.find_hwnd(None, ['game.exe'], 0, 0)[1])
+
+        message = info.call_args[0][0]
+        self.assertIn('pid 4242 is not resolvable in /proc', message)
+        self.assertNotIn('does not match', message)
+        self.assertEqual(1, message.count('20971521'), 'one window, one reject line')
+
+    def test_an_unresolvable_pid_still_matches_when_no_exe_names_are_given(self):
+        """[P2-12a] The skip must not change matching: with `exe_names` unset a window
+        whose pid is invisible in /proc is still a candidate, with an empty path. A title
+        is required because `find_hwnd` returns a miss outright when both filters are
+        None (`window_x11.py:296`)."""
+        from ok.compat import window_x11
+        fake = FakeX11([FakeWindow(0x1400001, pid=4242, name='Ghost', geometry=(0, 0, 800, 600))])
+
+        with unittest.mock.patch.object(window_x11, 'x11', fake), \
+                unittest.mock.patch.object(window_x11, '_exe_candidates', return_value=([], [])):
+            name, hwnd, full_path = window_x11.find_hwnd('Ghost', None, 0, 0)[:3]
+
+        self.assertEqual(0x1400001, hwnd)
+        self.assertEqual('Ghost', name)
+        self.assertEqual('', full_path)
+
+    def test_a_title_only_miss_says_which_title_did_not_match(self):
+        """[P2-12b] Every window filtered by title left `rejects` empty, so the message
+        ended in a dangling `: `."""
+        from ok.compat import window_x11
+        fake = FakeX11([FakeWindow(0x1400001, pid=4242, name='Other')])
+
+        with unittest.mock.patch.object(window_x11, 'x11', fake), \
+                unittest.mock.patch.object(window_x11, '_exe_candidates',
+                                           return_value=([('game.exe', '/g/game.exe')], [])), \
+                unittest.mock.patch.object(window_x11, '_last_no_match_log', 0), \
+                unittest.mock.patch.object(window_x11.logger, 'info') as info:
+            self.assertEqual(0, window_x11.find_hwnd('Wuthering Waves', None, 0, 0)[1])
+
+        message = info.call_args[0][0]
+        self.assertFalse(message.endswith(': '), 'the reason list must never be empty')
+        self.assertIn("title does not match 'Wuthering Waves'", message)
+```
+
+### Verification — this whole patch was applied and run before being written down
+
+Not a proposal: the three code edits and the three tests above were applied to a working
+copy of `8cda739` on 2026-09-01, measured, and then reverted (the fork tree is clean at
+`8cda739`). Expected results, all observed:
+
+```sh
+V=/home/max/vsCODE/okport-venv
+cd /home/max/vsCODE/ok-script-linux
+$V/bin/python -m pytest tests/test_x11_window.py     # 62 today -> 65 passed with the patch
+$V/bin/python -m pytest tests                        # 441 passed, 6 failed, 1 skipped, 10 subtests
+```
+
+And the check that makes them regression tests rather than decoration — with the **tests
+applied but `window_x11.py` reverted**:
+
+```
+FAILED tests/test_x11_window.py::TestFindHwnd::test_a_title_only_miss_says_which_title_did_not_match
+FAILED tests/test_x11_window.py::TestFindHwnd::test_an_unresolvable_pid_is_reported_once_not_twice
+2 failed, 63 passed
+```
+
+`test_an_unresolvable_pid_still_matches_when_no_exe_names_are_given` passes **both**
+before and after, by design: it is the guard on the behaviour change, not on the fix.
+
+The six failures are §9b's Windows-only set (`test_device_manager` ×2, `test_process`,
+`test_task_ui`, `test_web_server` ×2) and must stay exactly those six. No ok-ww code change
+is needed — but if this lands on the fork's `linux-port` branch,
+`requirements-linux.txt:35` pins `@8cda7398…` and **must be repinned** to the new commit,
+or CI keeps testing the old tree (that is P2-9a's whole lesson).
 
 ## P2-13 — `x11.resize()` has the same replyless-request lie P2-3 fixed in `activate()` [contract] — **FIXED**
 
@@ -717,12 +964,15 @@ poll the geometry itself — `resize_window` owns the settle loop and would then
 
 1. ~~**P2-9a**~~ — done. The only finding that left a *previous* finding falsely marked
    fixed, and it blocked every other CI claim.
-2. ~~**P2-13**~~ — done. A 5-second stall on the startup path; one guard, two tests.
-3. **P2-12** — two lines, in the message that exists to be read at 3am. **Open.**
-4. **P2-11** — measure on a reparenting WM before changing anything; may turn out to be
-   documentation only. **Open.**
+2. ~~**P2-9b**~~ — done. The gate had only ever passed on a dirty config.
+3. ~~**P2-13**~~ — done. A 5-second stall on the startup path; one guard, two tests.
+4. ~~**P2-12**~~ — done (`c23646d`). Applied exactly as specified above; all three tests
+   behaved as predicted, including the one that passes before *and* after.
+5. ~~**P2-11**~~ — done (`4ca767e`). The measurement was not blocked after all: a nested
+   `Xwayland :9` plus a ~50-line reparenting WM reproduces the shape with no root and no
+   package. It resolved to outcome 2, not documentation.
 
-Neither open item blocks Phase 3.
+Phase 2 has no open findings. Phase 3 was never blocked by either.
 
 ## Second-pass verification state
 
@@ -740,3 +990,212 @@ and the lock repinned to `8cda739`.
   run `33587502715` is green end to end. That run is now the load-bearing evidence for
   Phase 1's deferred C9 criterion, which until today had only ever been demonstrated on a
   machine that had already run the app.
+
+---
+
+# Third pass — patch verification (2026-09-01)
+
+An independent check of the claims in this file's own tables: does the code actually
+contain each fix, and does it behave that way when run. State: ok-script-linux `8cda739`
+(branch `linux-port`), ok-ww `ca80c6c` (`master`), `requirements-linux.txt:35` pinned to
+`@8cda7398…` — the pin and the fork HEAD agree. Same venv (`/home/max/vsCODE/okport-venv`),
+same KWin/Xwayland desktop, two monitors, no game running.
+
+**Result: eleven of the thirteen findings are genuinely closed in code and confirmed by
+execution. P2-11 and P2-12 remain open, exactly as this file says.** Nothing was found to
+be marked fixed that is not.
+
+| Finding | Where the fix is, at `8cda739` | Confirmed by |
+|---|---|---|
+| P2-1 | `ok/compat/window_x11.py:198` `resize_window` — subtracts `get_frame_extents` to get the client size, settles on `client + extents == requested`, centres the *outer* rect with a comment recording the win_gravity reasoning | code read; the two live `resize_window` tests pass |
+| P2-2 | `x11_window.py:67` `_pactl_env()` returns `{**os.environ, 'LC_ALL': 'C', 'LANGUAGE': ''}`; `import os` present at line 32; `set_mute_state` skips a stream already at the target | code read |
+| P2-3 | `ok/compat/x11.py:462` `activate(wid, timeout=0.5)` polls `is_active` and returns it | live: `activate(0x7fffffff)` → **False** after 0.5s, with `activate 2147483647: the window manager did not grant focus within 0.5s` at debug |
+| P2-4 / P2-5 | `tests/test_x11_window.py:756` recurses `ast.Tuple`/`ast.List`, `:772` handles `ast.AnnAssign`/`ast.AugAssign`; `:865` asserts `{'a','b','c','d'}` | test run |
+| P2-6 | `window_x11.py:313-372` — `rejects` list, `_NO_MATCH_LOG_INTERVAL = 30` at line 44 | test run, and the two repros below |
+| P2-7 | `x11.py:176` `list_clients` unions all three sources; source 3 (`:223`) keeps override-redirect windows; source 2 is the fallback | code read; live `list_clients` returns ids `_NET_CLIENT_LIST` does not have |
+| P2-8 | `LINUX.md:228` now reads `49 passed, 13 skipped` | measured: `62 passed` with `DISPLAY`, `49 passed, 13 skipped` without |
+| P2-9 / P2-9a | `.github/workflows/linux.yml` — no `submodules`, no `lfs`, with the reason in a comment above the step | `gh run list`: **two green runs**, `33587502715` and `33587618601`, after three failures |
+| P2-9b | `tools/check_linux_startup.py:90-114` drives both `do_start` passes | run cold (`rm -f configs/devices.json`): `first do_start only set the preferred device; re-entering as the app does` → `do_start selected BitBlt_True + PostMessageInteraction` → `PASS`, exit 0 |
+| P2-10 | `x11.py:261` `get_name` decodes `WM_NAME` as `latin-1`, `_NET_WM_NAME` as `utf-8` | code read |
+| P2-13 | `x11.py:512` `resize` calls `win.get_attributes()` — reply-bearing — before `configure` | live: `x11.resize(0x7fffffff,100,100)` → **False in 0.000s**; `resize_window(0x7fffffff,500,300)` → **False in 0.000s** (was 5.04s) |
+| P2-11 | **not fixed, and correctly so** — it is a measurement, not a patch | see the correction in P2-11: this machine has no reparenting WM to measure on |
+| P2-12 | **not fixed** — `window_x11.py:335` still has no `continue`; the title filter at `:322-327` still appends no reject | both re-reproduced verbatim, see P2-12 |
+
+P2-12's patch was not merely specified — it was applied to a working copy, run
+(`441 passed, 6 failed`), shown to fail 2/3 of its new tests without the code change, and
+reverted. One error in the first draft of that spec was caught this way and corrected in
+place: `find_hwnd` returns a miss immediately when `title` **and** `exe_names` are both
+None (`window_x11.py:296`), so the behaviour-preservation test has to pass a title.
+
+Costs re-measured on this desktop: `list_clients` **2.10 ms/call** (2 clients). Consistent
+with the second pass's 1.87 ms and the first pass's 1.8 ms; the variance is how many
+windows are open, which is the point P2-11 makes.
+
+One correction to this file itself, made above rather than left for the reader: **P2-11's
+"Fix" named the wrong function.** It pointed at `_walk_for_clients` (source 2, `x11.py:161`,
+which cannot run on a WM that publishes `_NET_CLIENT_LIST`) instead of the root-children
+loop in `list_clients` (source 3, `x11.py:223-232`, which is what adds the frames). An
+implementer following the original text would have patched dead code and measured no
+change. P2-11 now carries the corrected location, the `seen`-based predicate, a runnable
+measurement recipe, and the warning that a careless frame-skip deletes the
+override-redirect window P2-7 exists to find.
+
+## How to re-run this verification
+
+```sh
+V=/home/max/vsCODE/okport-venv
+cd /home/max/vsCODE/ok-script-linux
+$V/bin/python -m pytest tests/test_x11_window.py                 # 62 passed
+env -u DISPLAY QT_QPA_PLATFORM=offscreen $V/bin/python -m pytest tests/test_x11_window.py
+                                                                 # 49 passed, 13 skipped
+$V/bin/python -m pytest tests                                    # 438 passed, 6 failed, 1 skipped
+$V/bin/python tools/scan_module_level_win32.py --check           # exit 0
+$V/bin/python tools/check_linux_imports.py                       # exit 0, 70/70
+
+cd /home/max/vsCODE/ok-wuthering-waves-linux
+rm -f configs/devices.json && $V/bin/python tools/check_linux_startup.py   # PASS, cold
+gh run list --limit 5                                            # top two rows green
+```
+
+The six failures are §9b's Windows-only set and must stay six. `configs/devices.json` is
+gitignored and is regenerated by the gate run — deleting it is the cold-start test, not a
+destructive act.
+
+---
+
+# Fourth pass — the last two findings closed (2026-09-02)
+
+Both remaining findings are fixed, on ok-script-linux branch `linux-port-p2-11-12`:
+**P2-12 `c23646d`**, **P2-11 `4ca767e`**. State going in: ok-script-linux `8cda739`, ok-ww
+`ca80c6c`, same venv (`/home/max/vsCODE/okport-venv`), same KWin/Xwayland desktop, no game
+running. **Phase 2 now has no open findings.**
+
+## P2-12 — applied exactly as the third pass specified
+
+The write-up above was a drop-in patch and behaved as one. Nothing in it needed correcting.
+
+* Both defects reproduced first, verbatim, against `8cda739`.
+* The three code edits and three tests went in unchanged.
+* `tests/test_x11_window.py`: **62 → 65 passed**.
+* The negative control the spec asked for: with the tests applied and `window_x11.py`
+  reverted, exactly `test_a_title_only_miss_says_which_title_did_not_match` and
+  `test_an_unresolvable_pid_is_reported_once_not_twice` fail — `2 failed, 63 passed` —
+  and `test_an_unresolvable_pid_still_matches_when_no_exe_names_are_given` passes both
+  before and after, which is its job.
+
+## P2-11 — the measurement was not blocked; the assumption was
+
+Three passes recorded this as blocked on hardware/packages: `kwin_wayland` does not
+reparent, and none of Xephyr, Xvfb, Xnest, openbox, xfwm4, mutter, marco, metacity, i3,
+fluxbox, icewm, jwm, twm, blackbox or even xterm is installed — re-checked 2026-09-02,
+still none, and installing needs root.
+
+The unstated assumption was that measuring a reparenting WM means *installing* one. Two
+things make that false:
+
+1. **`Xwayland :9 -geometry 1000x700`** is already on this box (the session runs it) and
+   gives a nested rootful X server inside the existing Wayland session — no root, no
+   package, and nothing touching the user's real `:0`.
+2. **A window manager is just an X client.** Select `SubstructureRedirect` on the root;
+   on each `MapRequest` create a frame window, `reparent` the client into it, map both,
+   set `WM_STATE` on the client and publish `_NET_CLIENT_LIST`. ~50 lines of python-xlib.
+   Behind a `--reparent` flag, the same harness produces *both* shapes against the same
+   server and the same clients — which is the comparison the finding actually needed. The
+   absolute milliseconds are from a nested server and are not the session's; the columns
+   are.
+
+### What it measured
+
+10 managed clients, each with a real `_NET_WM_PID` and a name; `--reparent` the only
+difference between columns 1 and 2:
+
+| | non-reparenting | reparenting, `8cda739` | reparenting, `4ca767e` |
+|---|---|---|---|
+| `find_hwnd` | 3.17 ms/call | 5.28 ms/call | **3.93 ms/call** |
+| `list_clients` | 0.11 ms/call | 0.53 ms/call | 1.00 ms/call |
+| ids returned | 10 | 20 (10 frames) | 10 |
+| `no _NET_WM_PID` reject lines in P2-6's message | 0 | 10 | 0 |
+
+At 3 clients the same shape: `find_hwnd` 1.02 → 1.66 → 1.28 ms, surplus 3 → 0. And the
+non-reparenting column is byte-for-byte unchanged by the fix (3.17 → 3.17 ms), because
+there the clients are the root's own children and are skipped by `child.id in seen` before
+the new predicate is reached.
+
+So P2-11's prediction held in shape and sign — "roughly doubles, plus one noise line per
+managed window" — and the answer to its three-way question is **outcome 2**, not outcome 1.
+The cost alone would have been arguable (~2% of the 0.2s poll); the cost *plus* one
+pure-noise line per managed window in the one message whose whole purpose is signal is not.
+Outcome 3 was rejected because it treats the symptom in `find_hwnd`'s message while
+`list_clients` keeps paying three round trips per frame.
+
+### The fix, and why the two obvious predicates are wrong
+
+`ok/compat/x11.py`, a new `_frames_a_known_client(child, seen)` called from the
+root-children loop — the location the third pass corrected this finding to.
+
+```python
+    try:
+        return any(c.id in seen for c in child.query_tree().children)
+    except Exception:
+        return False
+```
+
+A real WM's frames **are** override-redirect, unnamed and pid-less, so every predicate of
+the form "skip override-redirect" / "skip unnamed" / "skip pid-less" also deletes the
+override-redirect toplevel P2-7 exists to find — a fullscreen-exclusive Wine window is
+exactly that shape. The separating test is positional: *does this window contain a client
+we already have.* `seen` already holds sources 1 and 2, so it needs no extra bookkeeping,
+and an override-redirect toplevel has no child in `seen` because nothing else in the tree
+holds it.
+
+The trade is explicit in the table: `list_clients` **alone** gets slower — one `QueryTree`
+per frame is a round trip the old loop did not make — and buys back three per managed
+window in `find_hwnd`, the call that runs on the 0.2s poll thread. Both callers of
+`list_clients` (`find_hwnd`, `find_all_visible_windows`) filter by name or pid and were
+paying for the frames either way.
+
+Four unit tests (`TestFrameSkip`), no display needed: a frame, an override-redirect
+toplevel, a toplevel whose children are all unknown (the bare-X-server/Xvfb case), and a
+window destroyed mid-walk. The predicate is unit-tested rather than driven live precisely
+because neither this desktop nor CI is a reparenting WM.
+
+## Verification state (fourth pass)
+
+| Check | Result |
+|---|---|
+| `pytest tests` (fork) | **445 passed / 6 failed / 1 skipped / 10 subtests** — the six are §9b's Windows-only set, unchanged |
+| `pytest tests/test_x11_window.py` | **69 passed** (was 62) |
+| same, `env -u DISPLAY QT_QPA_PLATFORM=offscreen` | **56 passed / 13 skipped** (was 49/13) |
+| `tools/scan_module_level_win32.py --check` | exit 0 |
+| `tools/check_linux_imports.py` | exit 0, 70/70 |
+| `tools/check_linux_startup.py`, cold (`rm -f configs/devices.json`) | `PASS  startup reaches capture-method selection`, `BitBlt_True + PostMessageInteraction`, exit 0 |
+| live P2-7 override-redirect test on the real desktop | passes — the regression that mattered |
+
+Docs moved with the code: `LINUX.md` 62 → 69 tests, 438 → 445 suite, `49 passed, 13 skipped`
+→ `56 passed, 13 skipped`; `PORT.md` §10c is new (C20-C22) and §10b C14 now carries the
+reparenting-WM numbers it had generalised past.
+
+And P2-9a's lesson, applied without being asked: the two commits are merged to the fork's
+`linux-port` as **`693a496`**, and `requirements-linux.txt:35` is repinned from
+`@8cda7398…` to `@693a4961…`. A lock left on the old commit means CI keeps testing the old
+tree and every green run says nothing about these fixes.
+
+## Reproducing the reparenting measurement
+
+The harness is three short scripts; they are not committed, because a window manager in
+`tools/` would be odd. Recreate them from the description above, or:
+
+```sh
+Xwayland :9 -geometry 1000x700 &                 # nested, rootful, no root needed
+V=/home/max/vsCODE/okport-venv
+cd /home/max/vsCODE/ok-script-linux
+DISPLAY=:9 $V/bin/python miniwm.py --reparent &  # omit the flag for the flat shape
+DISPLAY=:9 $V/bin/python clients.py 10 &
+DISPLAY=:9 $V/bin/python measure.py 'REPARENT 10'
+```
+
+`miniwm.py` is the ~50-line WM above; `clients.py` maps N named toplevels with
+`_NET_WM_PID`; `measure.py` prints `list_clients()` against `xprop -root _NET_CLIENT_LIST`
+(the surplus is the frames), times `list_clients` and `find_hwnd` over 50 calls, and
+captures P2-6's message with `window_x11._last_no_match_log = 0` and `logger.info`
+patched. Kill the three and the nested server when done — nothing touches `:0`.

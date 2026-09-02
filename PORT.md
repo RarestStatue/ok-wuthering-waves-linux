@@ -1730,6 +1730,14 @@ against 1.7ms for the other two. Cost of the change: `find_hwnd` 0.68ms → 2.45
 ~1.2% of the 0.2s poll. Still unproven against a fullscreen-exclusive Proton game —
 confirm alongside [GATE-1b]/[GATE-2].
 
+> **Extended 2026-09-02 (§10c).** Those figures were all taken on `kwin_wayland`, which
+> does **not** reparent X11 clients. On a *reparenting* WM the root's children are the WM's
+> frames, so the root-children source added one frame per managed window. Measured on a
+> nested Xwayland driven by a minimal reparenting WM, 10 clients: `find_hwnd` 3.17ms →
+> 5.28ms, and one pure-noise `no _NET_WM_PID` line per managed window in C16's message.
+> `list_clients` now drops a frame whose child it already has, and only that shape —
+> `find_hwnd` 3.93ms on the same reparenting WM, 3.17ms unchanged on a non-reparenting one.
+
 **C15. A drift gate that cannot fail is worse than no gate.**
 `test_every_upstream_method_is_inherited_or_overridden` asked
 `hasattr(X11Window, name)` for every name in `vars(HwndWindow)` — True by definition for a
@@ -1805,6 +1813,84 @@ offenders, 70/70 lazy imports, the `win32con` constants). The Phase 2 exit gate 
 PostMessageInteraction` as before. All of it re-measured independently in a second pass —
 every number here reproduces, and the second pass' own four findings (the C17 correction
 above, plus three smaller ones) are in `GAPS.md` under *Phase 2 — second pass*.
+
+---
+
+## 10c. Phase 2 — the last two findings closed (2026-09-02)
+
+`GAPS.md`'s third pass left exactly two findings open, P2-11 and P2-12. Both are closed
+now, on ok-script-linux branch `linux-port-p2-11-12` (`c23646d`, `4ca767e`). Neither
+changed what the port does; both changed what it costs and what it says when it fails.
+
+**C20. A measurement the machine "cannot take" was worth 40 lines of window manager.**
+P2-11 was blocked for three passes on the same sentence: this session is
+`kwin_wayland --xwayland`, which does not reparent X11 clients, and none of Xephyr, Xvfb,
+Xnest, openbox, xfwm4, mutter, i3 or twm is installed — re-checked 2026-09-02, still none.
+The unstated assumption was that measuring a reparenting WM requires *installing* one. It
+does not. `Xwayland :9 -geometry 1000x700` gives a nested rootful X server inside the
+existing Wayland session with no root and no package, and a window manager is a client
+like any other: select `SubstructureRedirect` on the root, and on each `MapRequest` create
+a frame, `reparent` the client into it, set `WM_STATE`, and publish `_NET_CLIENT_LIST`.
+That is ~50 lines of python-xlib, and with a `--reparent` flag the *same* harness produces
+both shapes against the same server and the same clients — which is the comparison that
+was missing, not the absolute numbers.
+
+What it showed, 10 clients, the `--reparent` flag being the only difference:
+
+| | non-reparenting | reparenting, frames kept | reparenting, after the fix |
+|---|---|---|---|
+| `find_hwnd` | 3.17 ms/call | 5.28 ms/call | 3.93 ms/call |
+| `list_clients` | 0.11 ms/call | 0.53 ms/call | 1.00 ms/call |
+| ids returned | 10 | 20 (10 frames) | 10 |
+| `no _NET_WM_PID` reject lines | 0 | 10 | 0 |
+
+So P2-11's prediction held in shape and in sign: not a correctness bug — the real client
+still arrives from `_NET_CLIENT_LIST` and the frames fall out at `find_hwnd`'s first
+filter — but a real cost and, worse, one noise line per managed window in the one message
+whose whole purpose is signal (C16).
+
+**C21. The right predicate for "is this a frame" is not "is it override-redirect".** A
+real WM's frames *are* override-redirect, unnamed and pid-less, so all three of the
+obvious tests would also delete the override-redirect toplevel C14 exists to find — a
+fullscreen-exclusive Wine window is exactly that shape. The test that separates them is
+positional: **does this window contain a client we already have.** `list_clients` builds a
+`seen` set from sources 1 and 2 before the root-children loop runs, so the predicate is
+`any(c.id in seen for c in child.query_tree().children)` and needs no extra bookkeeping.
+An override-redirect toplevel has no child in `seen` — nothing else in the tree holds it,
+which is precisely why the source exists. On a non-reparenting WM the loop never reaches
+the predicate: the clients are the root's own children and were skipped by
+`child.id in seen` one line earlier, which is why that column is unchanged at 3.17 ms.
+
+Note the trade the table makes explicit: `list_clients` *alone* gets slower (one
+`QueryTree` per frame is a round trip the old loop did not make). It buys back three per
+managed window in `find_hwnd` — the call on the 0.2s poll thread, and the only one that
+matters. Both callers of `list_clients` filter by name or by pid and were paying for the
+frames either way.
+
+**C22. "Report why" is not finished until each window reports once.** C16 added the
+rejection message; P2-12 found two defects in it. A window whose `_NET_WM_PID` names a pid
+invisible in `/proc` — the pressure-vessel shape, [GATE-1b]'s whole risk and the reason
+the message exists — appended its reject and then fell through into the `exe_names` branch
+and appended a second one, so the single most diagnostic case in the log looked like two
+windows and ended on the weaker reason. And a title mismatch `continue`d without appending
+anything, so a run filtered entirely by title printed a message ending in a dangling `: `.
+
+Both fixes are three lines, and the interesting part is what the first one is *not*: a
+bare `continue`. With `exe_names` unset, a window with an unresolvable pid is still a
+legitimate match with `name`/`full_path` of `""` — upstream's contract, which ok-ww never
+exercises (it always passes `exe_names`) but the fork is a library and other apps do. The
+skip is guarded on `exe_names` being truthy, where it is provably a no-op. A test that
+passes both before and after the change guards that arm; two more fail without it.
+
+**Verification state after §10c.** Fork suite **445 passed / 6 failed / 1 skipped / 10
+subtests** — the six are §9b's Windows-only set, unchanged; `tests/test_x11_window.py` is
+**69 tests**, 13 of them live (**69 passed** with `DISPLAY`, **56 passed / 13 skipped**
+without). `tools/scan_module_level_win32.py --check` exit 0, `tools/check_linux_imports.py`
+exit 0 (70/70), and `tools/check_linux_startup.py` prints
+`PASS  startup reaches capture-method selection` on a cold config
+(`rm -f configs/devices.json`), selecting `BitBlt_True + PostMessageInteraction`. The live
+override-redirect test (C14/P2-7) still passes on the real KWin/Xwayland desktop, which is
+the regression that mattered.
 
 ---
 
@@ -2004,3 +2090,22 @@ xprop -id <win> WM_CLASS _NET_WM_PID
 # WM_CLASS(STRING) = "steam_proton", "steam_proton"
 # _NET_WM_PID(CARDINAL) = <the real Linux pid>
 ```
+
+**Measuring against a reparenting WM without installing one [§10c C20]:**
+```sh
+# A nested, rootful X server inside the existing Wayland session -- no root, no package,
+# and it never touches the real :0. The reparenting WM is ~50 lines of python-xlib:
+# SubstructureRedirect on the root, and on MapRequest create a frame, reparent the client
+# into it, map both, set WM_STATE, publish _NET_CLIENT_LIST. Put the shape behind a
+# --reparent flag so the same harness produces both columns.
+Xwayland :9 -geometry 1000x700 &
+V=/home/max/vsCODE/okport-venv
+DISPLAY=:9 $V/bin/python miniwm.py --reparent &   # omit the flag for the flat shape
+DISPLAY=:9 $V/bin/python clients.py 10 &          # N named toplevels with _NET_WM_PID
+DISPLAY=:9 $V/bin/python measure.py 'REPARENT 10'
+# measure.py: list_clients() vs `xprop -root _NET_CLIENT_LIST` (the surplus is the frames),
+# 50-call timings for list_clients and find_hwnd, and P2-6's message captured with
+# window_x11._last_no_match_log = 0 and logger.info patched.
+```
+Absolute milliseconds from a nested server are not the session's; the *columns* are what
+the measurement is for. Full write-up and numbers: `GAPS.md`, *Fourth pass*.
