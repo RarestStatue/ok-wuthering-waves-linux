@@ -1,322 +1,441 @@
-# GAPS — review of the Phase 0-1 implementation (2026-09-01)
+# GAPS
 
-> **Resolved 2026-09-01.** Every finding below was re-verified by execution before being
-> acted on. Fixes are in ok-script-linux `cba672b`, `c700b2d`, `12f64a3` and in this repo's
-> lockfile pin and `PORT.md` §9 C7-C9 / §9b.
+> **Resolved 2026-09-01.** Every Phase 2 finding below was fixed and each fix verified by
+> execution, on this machine's real KWin/Xwayland desktop. The code fixes are in
+> ok-script-linux `9b33a03` (branch `linux-port`); the CI job and the lock repin are in
+> this repo.
 >
 > | | Outcome |
 > |---|---|
-> | G1 | fixed — `_CALL_ERRORS = {'winreg': FileNotFoundError}`, plus both-guard-styles and end-to-end tests |
-> | G2 | fixed — `OPTIONAL_EXTRAS` removed outright |
-> | G3 | fixed at the source, not documented around — `TaskTab`'s unparented `QTimer` was the leak; suite now stable at 376/6/1 across three runs |
-> | G3b | **cause was wrong.** Not `os._exit`: `pytest.ini`'s `addopts` already carries `-q`, so a second `-q` raises quiet to level 2 and suppresses the stats line. Traced `os._exit` during a full run and it is never called |
-> | G4 | fixed — pinned to `12f64a34...`, with the repin step in the regeneration recipe |
-> | G5 | fixed — `.github/workflows/linux.yml` on `ubuntu-latest`, the six known failures deselected by node id |
-> | G6 | fixed — `publish.yml` gated on `github.repository == 'ok-oldking/ok-script'` |
-> | G7 | fixed — `is not None` in both places, with a regression test that holds fd 0 |
-> | G8 | fixed — `UNAVAILABLE` sentinel; `check_mutex` refuses to start instead of killing |
-> | G9 | fixed — both walks cover `tests/`; widening them immediately surfaced two false positives in the meta-test, now excluded |
-> | G10 | fixed — separate non-blocking CI job, and `LINUX.md` flags it as network-dependent |
-> | G11 | fixed — the three edits are relabelled Phase 3/4, recorded as §9 C8 |
-> | G12 | fixed — recorded as §9 C7 |
-> | G13 | fixed — recorded as §9 C9, carried into Phase 2's exit gate |
-> | G14 | fixed — docstring rewritten as belt-and-braces; the file is kept |
-> | G15 | fixed — audit recorded in the `win32_stub` docstring |
-> | G16 | **rejected in part.** The `cv2` diagnosis is right and the `LINUX.md` half is done, but declaring `opencv-python` in the fork is not a fix: upstream's `tests/test_package_metadata.py` asserts that no profile mentions opencv (commit "Refactor dependency profiles for headless installs"), so that a headless consumer can choose `opencv-python-headless`. Attempting it turns that test red |
+> | P2-1 | fixed — `resize_window` honours the outer contract. Measured against a 28px-title-bar window: `try_resize_to` now lands content at exactly 500x300 and reports success (was 500x328 + `resize hwnd failed`), and four re-centre iterations leave the window at 500x328 (was +28px each). Centring lands the frame exactly on the monitor centre, which is why the "secondary" subtraction below is **not** part of the fix — see the note in P2-1 |
+> | P2-2 | fixed — `_pactl` runs with `LC_ALL=C, LANGUAGE=''`. Re-measured under `LC_ALL=de_DE.UTF-8 LANGUAGE=de`: unpinned parses `[]`, pinned parses both sink inputs. `set_mute_state` also skips a stream already in the requested state |
+> | P2-3 | fixed — `activate()` polls `is_active` for 0.5s and returns that. Live: a real window returns True, `0x7fffffff` returns False (was True) |
+> | P2-4 | fixed — the gate now AST-walks upstream for Win32-reaching methods and asserts each is in `vars(X11Window)`, with a test that simulates the drift the old one claimed to catch |
+> | P2-5 | fixed — `_init_attributes` walks `AnnAssign` and recurses into tuple/list targets, with a test over all three shapes |
+> | P2-6 | fixed — every rejected window is reported with its reason, rate-limited to once per 30s because this runs on the 0.2s poll thread (the unthrottled version emitted five lines a second for the whole time the game is not running) |
+> | P2-7 | fixed, and the proposed one-liner was **not enough**. Unioning the WM_STATE walk would not have found an override-redirect window either: `WM_STATE` is a property the *WM* sets, so both source 1 and source 2 see only managed clients. The root-children source is unioned in instead, and keeps override-redirect windows. Still unverified against the real game — the live test creates its own override-redirect toplevel and asserts the WM does not list it |
+> | P2-8 | fixed — and the numbers moved anyway: the file is 60 tests, 11 of them live, `49 passed, 11 skipped` with no `DISPLAY` |
+> | P2-9 | fixed — `.github/workflows/linux.yml` in this repo runs the gate on `ubuntu-latest` under `xvfb-run` |
+> | P2-10 | fixed — `WM_NAME` decodes as Latin-1, `_NET_WM_NAME` stays UTF-8 |
 >
-> One further correction the review did not catch: §9's "ok-ww's own suite: 17/17" does not
-> reproduce. Default discovery collects 12, all passing; the other 30 modules are named
-> `Test*.py` and need an explicit `python_files` override plus a running game.
+> Two things the fixes cost, both measured and both accepted: `list_clients` went 0.05ms ->
+> 1.8ms and `find_hwnd` 0.68ms -> 2.45ms per call (~1.2% of the 0.2s poll), because the
+> root-children scan is a round trip per child; and `bring_to_front` can now spend up to
+> 0.5s per candidate before reporting a refusal, which is the price of the refusal being
+> true. The expensive WM_STATE walk (6.0ms) stays a fallback for a non-EWMH WM.
 
-Review of `PORT.md` §4 Phase 0 / Phase 1 against what actually shipped in
-`/home/max/vsCODE/ok-script-linux` (branch `linux-port`, HEAD `e735836`, in sync with
-`origin/linux-port`) and in this repo (`9effbc3`, `7870eb6`).
+Findings from reviewing the port implementation against `PORT.md`. Organised by the phase
+that owns the code, mirroring the plan's own structure.
 
-Everything below was **executed**, not read. Reproduction environment:
+Everything below was **executed**, not read. Reproduction environment (already on this
+machine):
 
 ```sh
-python3.12 -m venv v312
-v312/bin/pip install -e '/home/max/vsCODE/ok-script-linux[web,default,qt,adb,ocr,dev]' \
-    pytest-qt opencv-python==5.0.0.93 openvino polib
+V=/home/max/vsCODE/okport-venv          # python 3.12.14, ok-script-linux installed -e
+$V/bin/python -m pytest tests           # from /home/max/vsCODE/ok-script-linux
 ```
 
+State reviewed: ok-script-linux `c396113` (branch `linux-port`), ok-ww `3696dca` (`master`).
+Session had a real KWin/Xwayland desktop (`DISPLAY=:0`), two monitors, no game running.
+
 ---
+
+# Phase 2 — the X11 window layer
 
 ## What checks out
 
-Phase 1's substance is correct and the §9 implementation record is accurate on every
-load-bearing claim. Verified independently:
+Every load-bearing claim in `PORT.md` §10 and in `LINUX.md`'s Phase 2 section reproduces.
+Re-measured independently:
 
 | Claim | Result |
 |---|---|
-| `tools/scan_module_level_win32.py --check` | exit 0 — 27 offenders, the same 4 calling a loader at import |
-| `tools/gen_win32con.py --check` | exit 0 — both generated files current, 94 constants |
-| `tools/check_linux_imports.py` | exit 0 — **70/70** resolved, 0 skipped, 0 failed |
-| ok-ww's own suite | **17/17** |
-| `pip install --dry-run -r requirements.txt` on Linux | fails: `No matching distribution found for pywin32==311` |
-| `pip install --dry-run -r requirements-linux.txt` | exit 0 |
-| Where startup stops | exactly `hwnd_window.py:392 get_monitors_bounds() → NotImplementedError: win32api.EnumDisplayMonitors`, as documented |
-| `windows_graphics_available()` | returns `None`, `WINDOWS_BUILD_NUMBER == -1`, never touches `ok.rotypes` |
-| `get_crop_point` / `parse_reg_flag` | transcribed verbatim into `geometry.py`, asymmetry intact |
+| Fork suite | **419 passed / 6 failed / 1 skipped / 10 subtests** — exactly §10's number, and the 6 are §9b's Windows-only set, no new ones |
+| `tests/test_x11_window.py` | **43 passed**; with `DISPLAY` unset, 35 passed / 8 skipped (see P2-8) |
+| `tools/scan_module_level_win32.py --check` | exit 0 — 27 offenders, same 4 calling a loader at import |
+| `tools/check_linux_imports.py` | exit 0 — **70/70** resolved |
+| `tools/check_linux_startup.py` (Phase 2 exit gate) | **PASS**, and prints exactly what §10 records, including `BitBlt_True + PostMessageInteraction` and the two monitor rects |
+| §10's CI arithmetic (416 passed / 3 skipped / 6 deselected) | self-consistent: the 1 local skip is `test_web_task_tabs` needing `httpx`, present in CI; the 3 CI skips are the WM-dependent live tests |
+| `X11Window` really is what `DeviceManager` builds | verified via `capture.HwndWindow is x11_window.X11Window` and through the live gate |
+| D7 — `activate()` de-iconifies like `ShowWindow(SW_RESTORE)` | verified live: `xdotool windowminimize` → `is_minimized True`, `WM_STATE 3`; after `x11.activate` → `is_minimized False`, `is_active True` |
+| The `ok/util/window.py` shadow is complete and no wider | `capture_methods/__init__.py:23` is genuinely the only importer of the five-helper group; the 8 shadowed names all resolve to `ok.compat.window_x11` |
+| `_NET_FRAME_EXTENTS` order `(left, right, top, bottom)` | correct — measured `(0, 0, 28, 0)` for a title-bar-only KWin decoration |
+| Error containment | every `x11.*` entry point returns its documented empty value for a bogus window id; 4 threads × 200 iterations of `list_clients`/`get_monitors`/`find_hwnd` on the shared display: 0 errors |
+| `find_hwnd` cost | 0.68 ms/call, `list_clients` 0.05 ms — comfortable inside the 0.2 s poll |
 
 Two extra checks the plan did not ask for, both clean:
 
-* **Whole-tree import sweep** (stronger than the `_LAZY_IMPORTS` sweep): 233 modules under
-  `ok/`, excluding `ok.rotypes` and `ok.capture.windows`, all import on Linux. The single
-  failure is `ok.ocr.download_paddle_model`, which wants the third-party `paddleocr` — not
-  a port issue. Worth promoting into `tools/check_linux_imports.py`; it would have caught
-  anything `_LAZY_IMPORTS` does not reach.
-* **Silent-corruption audit.** `grep -rhoE '(win32api|win32gui|…)\.[A-Z][A-Z0-9_]{2,}'`
-  over `ok/` yields only `win32api.MAKELONG` (implemented), `win32gui.WNDCLASS` (called →
-  raises), and `pydirectinput.FAILSAFE/LEFT/RIGHT` (only ever passed to a stubbed call that
-  raises first). So carving out `win32con` alone genuinely is sufficient — no other stubbed
-  attribute is used as a value.
+* `psutil.ZombieProcess` subclasses `psutil.NoSuchProcess`, so `_exe_candidates`' handler
+  covers it — a zombie Wine helper cannot escape `find_hwnd`.
+* `find_annotation_font()` (D6) resolves in 2.3 ms on this machine and early-returns on the
+  first-choice CJK face; the recursive walk is not a startup cost worth worrying about.
 
 ---
 
-## G1 — `winreg` stub raises bare `OSError`; half the callers guard on `FileNotFoundError` [correctness, fix first]
+## P2-1 — `resize_window` sizes the **client** rect where every caller passes **window** (outer) dimensions [correctness, fix first]
 
-`ok/compat/win32_stub.py:66-68` sets `_CALL_ERRORS = {'winreg': OSError}`. PORT.md C5
-justifies `OSError` because "every caller already handles [it] as nothing registered".
-That is true of ok-ww's `config.py`, but **not** of ok-script's own
-`ok/alas/emulator_windows.py`, which guards registry lookups with `except
-FileNotFoundError` in **11 places** (lines 203, 228, 233, 241, 374, 387, 406, 431, 437,
-478, 486). A bare `OSError` is not caught by those.
+`ok/compat/window_x11.py:192` `resize_window(hwnd, width, height)`. Upstream's Windows body
+(`ok/util/window.py:218-248`) is unambiguous about the contract:
 
-Reproduced:
-
-```
->>> EmulatorManager().all_emulator_instances
-ESCAPED: OSError Windows-only symbol called on linux: winreg.OpenKey
+```python
+user32.SetWindowPos(hwnd, None, 0, 0, width, height, ...)     # SetWindowPos sizes the WINDOW rect
+...
+left, top, right, bottom = win32gui.GetWindowRect(hwnd)       # and the settle check reads the WINDOW rect
+if n_width == width and n_height == height and ...: break
 ```
 
-**Fix:** `_CALL_ERRORS = {'winreg': FileNotFoundError}`.
+The Linux body uses client dimensions on **both** halves:
 
-`FileNotFoundError` is a subclass of `OSError`, so every existing `except OSError` caller
-(ok-ww `config.py:_find_most_recently_run_pc_exe`, `emulator_windows.py:34,50`) keeps
-working, *and* it is what real `winreg` raises for a missing key — strictly more accurate
-than the current choice. Verified: with `_error` swapped to `FileNotFoundError`,
-`EmulatorManager().all_emulator_instances` returns `[]` cleanly.
+* `window_x11.py:212` → `x11.resize(hwnd, width, height, ...)` → `win.configure(width=..., height=...)`
+  on the client window (`ok/compat/x11.py:467`).
+* `window_x11.py:218` settle check compares `x11.get_abs_geometry(hwnd)[2:4]`, which is also
+  the client size — so the function self-consistently reports success while the outer rect
+  is wrong by exactly the frame extents.
 
-Also update `tests/test_linux_win32_compat.py:124-134`
-(`test_winreg_calls_raise_oserror`) to assert **both** guard styles catch — the current
-test asserts only `OSError` and therefore passes over this bug.
+Both callers pass outer dimensions.
 
-Reachability today is limited (`DeviceManager.refresh_emulators` returns early when
-`adb_capture_config is None`, and `do_refresh` logs exceptions), so this is not a startup
-blocker — but it is a latent trap on the ADB path and the fix is one word.
-
-## G2 — the Phase-1 exit gate can green over a real failure
-
-`tools/check_linux_imports.py:54` skips `run_web` on **any** `ModuleNotFoundError`, not
-just one naming a `web`-extra module. Observed during this review, in a venv that had the
-`web` extra but not `cv2`:
+**Consequence 1 — `try_resize_to` overshoots and then always reports failure.**
+`ok/device/capture_methods/x11_window.py:306-323` derives `border = window_width - width`
+and `title_height = window_height - height` (i.e. the frame extents, correctly), computes
+`resize_width = resolution[0] + border`, and hands that outer size to `resize_window`.
+Reproduced against a real KWin-decorated window (28 px title bar), asking for 500×300 of
+content:
 
 ```
-SKIP  run_web    missing optional dependency -- ok-script's 'web' extra …: No module named 'cv2'
+frame_extents (l,r,t,b): (0, 0, 28, 0)
+get_window_bounds      : (2900, 512, 600, 428, 600, 400, 1.0)
+border=0 title_height=28
+try_resize_to computes resize_window(hwnd, 500, 328)
+resize_window returned True
+after get_window_bounds: (2950, 584, 500, 356, 500, 328, 1.0)
+try_resize_to success test: window_height(356) == resize_height(328) -> False
+CONTENT is 500x328, wanted 500x300, error 0x28
 ```
 
-If `run_web` were the only failure, the gate would print `69/70 … 0 failed` and exit 0
-while `ok.ui.web.server` was genuinely broken.
+So the content ends up `title_height` too tall, `try_resize_to` logs
+`resize hwnd failed` and returns `None`, and `start_controller.check_resolution`
+(`ok/core/start_controller.py:263-268`) therefore raises the
+`Resolution … check failed` alert even though the WM honoured the request.
 
-PORT.md C2 already says the skip is unnecessary (`run_web` resolves without the extra, and
-it did here: 70/70, 0 skipped). **Remove `OPTIONAL_EXTRAS` entirely**, or narrow it to
-`exc.name in {'fastapi', 'uvicorn', 'webview'}`. Drop the now-dead `SKIP` prose from
-PORT.md §4/1c's exit-criterion snippet at the same time.
+**Consequence 2 — the re-centre path grows the window without bound.**
+`ok/core/start_controller.py:312` calls
+`resize_window(hwnd_window.hwnd, hwnd_window.window_width, hwnd_window.window_height)`
+— outer dims again — every time `pos_valid` is False. Each call sets the client to the
+previous outer size. Reproduced, same window:
 
-## G3 — the fork's documented test baseline is not reproducible
+```
+iter 0: window=600x428  client=600x400
+iter 1: window=600x456  client=600x428
+iter 2: window=600x484  client=600x456
+iter 3: window=600x512  client=600x484
+final : window=600x540  client=600x512
+```
 
-`LINUX.md` claims **383 passed / 6 failed / 1 skipped**. Measured here (junit-xml, which
-is authoritative — see G3b): **390 tests, 378 passed, 11 failed, 1 skipped**, and the
-extra failure set *changes between runs of the same command*:
++28 px per invocation, monotonically, until the WM clamps it.
 
-| run | extra failures beyond the documented six |
+**Reachability.** `'Auto Resize Game Window': True` is the default
+(`ok/util/GlobalConfig.py:54`), and `check_resolution` runs on every start whose resolution
+does not match `supported_resolution`. Dormant only while the frame extents are all zero —
+i.e. a borderless-fullscreen Proton window. A *windowed* Wine game is decorated: §10's own
+live evidence (`wine notepad`) recorded a 28 px title bar.
+
+**Fix:** make `resize_window` honour the outer contract. Inside it, read
+`left, right, top, bottom = x11.get_frame_extents(hwnd)` and configure the client to
+`(width - left - right, height - top - bottom)`, clamping at 1; change the settle check to
+compare `client + extents` against the requested `width`/`height`. Keep the `(0,0,0,0)`
+case a no-op so the undecorated path is byte-identical to today.
+
+**Also, same function, secondary:** the centring is off by the frame extents in the same
+direction — requested `center_y = 556`, the client landed at `584 = 556 + 28`, because
+`x11.resize` passes root-absolute coordinates that the WM applies with gravity to the
+*frame*. Subtract `top`/`left` from `center_y`/`center_x` in the same patch.
+
+> **Correction, on measurement: do not subtract.** The gravity behaviour is exactly what
+> makes centring right once the *outer* dimensions are the ones being centred. ICCCM
+> `win_gravity` is `NorthWest` by default, so the WM places the **frame** at the requested
+> coordinates and the client lands `left`/`top` inside it. With `width`/`height` outer, the
+> centred rectangle is the window rect, which is what `SetWindowPos` centres on Windows.
+> Verified after the fix, same window: requested centre `(2950, 556)`, frame origin
+> `(2950, 556)`, client origin `(2950, 584)`. Subtracting the extents would have moved the
+> window off-centre by one title bar. Covered by
+> `test_resize_window_centres_the_window_rect_not_the_client`, which skips when the WM
+> draws no decorations.
+
+**Also add a regression test.** `tests/test_x11_window.py` has no coverage of
+`resize_window` against a frame-extents-bearing window — `test_resize_window_reaches_the_requested_size`
+(line 776) runs against an undecorated live window, which is exactly the case where the bug
+is invisible.
+
+## P2-2 — `pactl` output is localized, so mute silently never works outside an English locale [correctness]
+
+`ok/device/capture_methods/x11_window.py:66` `_pactl` runs `subprocess.run(('pactl',) + args, …)`
+with no `env`, so pactl inherits the user's locale and translates its own output.
+`_parse_sink_inputs` (line 85) matches the English literals `'Sink Input #'` (line 97) and
+`'Mute:'` (line 104).
+
+Reproduced on this machine (PipeWire's `pactl`):
+
+```
+$ pactl list sink-inputs | head -2          $ LC_ALL=de_DE.UTF-8 pactl list sink-inputs | head -2
+Sink Input #72                              Ziel-Eingabe #72
+	Driver: PipeWire                            Treiber: PipeWire
+
+$ LC_ALL=zh_CN.UTF-8 pactl list sink-inputs | head -1
+信宿输入 #72
+```
+
+and through the parser itself:
+
+```
+EN parsed: [('72', 0, False), ('415', 32472, False)]
+DE parsed: []
+```
+
+`Mute:` becomes `Stumm:` in de_DE, so even a translated header would not save the mute flag.
+
+Failure is **silent**: `_pactl` returns `returncode 0` and non-empty stdout, so no warning
+fires; `_sink_inputs_for_hwnd` returns `[]`, `set_mute_state` iterates nothing,
+`get_mute_state` returns `0`. The `Mute Game while in Background` option appears to work and
+does nothing. ok-ww's primary userbase is zh_CN, which is one of the affected locales.
+
+**Fix:** pass `env={**os.environ, 'LC_ALL': 'C', 'LANGUAGE': ''}` to `subprocess.run` in
+`_pactl` (`LANGUAGE` overrides `LC_ALL` for gettext and must be cleared too). `import os` is
+already needed — the module does not currently import it, so add it.
+
+**Add a regression test:** `TestMute` (line 445) feeds captured English text only. Feed it a
+localized capture as well, and assert `_pactl` builds an env that pins `LC_ALL=C`.
+
+**Minor, same function, no action required unless convenient:** with the option on,
+`handle_mute` spawns `pactl` at least twice every 2 s for the life of the run (measured
+7.6 ms per `pactl list sink-inputs`, on the 0.2 s poll thread) and re-issues
+`set-sink-input-mute` even when the stream is already in the requested state. Upstream's
+pycaw equivalent is in-process. Skipping the write when `muted` already equals the target is
+a one-line change in `set_mute_state`.
+
+## P2-3 — `x11.activate()` can never report a refusal, so `bring_to_front()` reports success unconditionally [contract]
+
+`ok/compat/x11.py:427`. The docstring promises *"Raise and focus. False if the WM refused"*,
+and `PORT.md` §4 Phase 2 specifies the same shape. The body issues `MapWindow`, a
+`_NET_ACTIVE_WINDOW` `ClientMessage` and a `ConfigureWindow` — three requests that carry no
+reply — then `d.sync()` and `return True`. Errors from replyless requests are routed to
+`_on_async_error` (`x11.py:81`, a `logger.debug`), never raised, so `_call` never sees them.
+A WM that simply ignores the ClientMessage (KDE and GNOME focus-stealing prevention, which
+the docstring itself anticipates) is indistinguishable from success.
+
+Proven — a window id that does not exist:
+
+```
+x11.exists(0x7fffffff)   -> False
+x11.activate(0x7fffffff) -> True        # and x11.resize(0x7fffffff, 100, 100) -> True
+```
+
+`X11Window.bring_to_front` (`x11_window.py:258`) guards with `x11.exists(hwnd)` first, so the
+dead-window case is covered by luck rather than by the primitive; the refusal case is not
+covered at all. `errors.append(f'{hwnd}: the window manager refused …')` at line 279 can
+only fire when the display connection itself is lost — never for the refusal it names.
+
+**Impact is bounded but real.** `ok/task/task.py:341` only logs on a False return, so no task
+breaks today. But `PynputInteraction`, `PyDirectInteraction` and
+`ForegroundPostMessageInteraction` all call `bring_to_front()` and then send input assuming
+focus was granted — Phase 4's foreground fallback (§4/4d) is built on this returning the
+truth.
+
+**Fix:** after `d.sync()`, poll `is_active(wid)` for a short bounded window (the file already
+has this pattern in `resize_window`'s settle loop — ~500 ms at 50 ms is ample) and return
+that instead of `True`. `test_bring_to_front_reports_a_refusal_instead_of_raising`
+(`tests/test_x11_window.py:425`) drives a fake and passes either way; add a live assertion
+that `activate()` on a destroyed window id returns False.
+
+## P2-4 — the method-drift gate is a tautology and can never fail [test gap]
+
+`tests/test_x11_window.py:577` `test_every_upstream_method_is_inherited_or_overridden`:
+
+```python
+missing = [name for name in vars(HwndWindow) if not name.startswith('__')
+           and not hasattr(X11Window, name)]
+self.assertEqual([], missing)
+```
+
+`X11Window` subclasses `HwndWindow`, so `hasattr(X11Window, name)` is True for every name in
+`vars(HwndWindow)` by definition. `missing` is `[]` unconditionally.
+
+`LINUX.md` and `PORT.md` §10 D1 both advertise this gate as failing when upstream gains
+"a method the subclass does not have" — the exact drift it is claimed to catch is invisible
+to it. Proven by simulating that drift:
+
+```
+>>> HwndWindow.brand_new_win32_method = <a method that calls win32gui>
+drift test would report missing = []
+X11Window inherits the new win32 method: True
+```
+
+An upstream rebase that adds a Win32-calling method to `HwndWindow` therefore lands as a
+silently inherited `NotImplementedError` at runtime, with a green suite.
+
+**Fix:** invert the test. AST-walk `HwndWindow`'s method bodies for `win32api` / `win32gui` /
+`win32con` / `win32process` / `ctypes` name references, and assert every method that touches
+one appears in `vars(X11Window)` (i.e. is genuinely overridden, not inherited). That reads
+the same way `test_the_linux_modules_call_no_win32` (line 586) already does, and it fails on
+the drift that matters. Keep the `issubclass` assertion.
+
+## P2-5 — the constructor-drift gate misses tuple and annotated assignment [test gap]
+
+`tests/test_x11_window.py:559-566`. `_init_attributes` collects only targets that are a bare
+`ast.Attribute` inside `statement.targets`:
+
+```python
+_init_attributes sees: ['a']    # for a body of  self.a = 1 / self.b, self.c = 2, 3 / self.d: int = 4
+                                # -> misses b, c (ast.Tuple target) and d (ast.AnnAssign)
+```
+
+`HwndWindow.__init__` today uses only plain assignments, so the gate passes for the right
+reason — by luck, not by construction. `do_update_window_size` in the same class already
+uses `self.x, self.y = x, y`, so tuple assignment is idiomatic in this file and an upstream
+edit could plausibly introduce it into `__init__`.
+
+**Fix:** also walk `ast.AnnAssign` (`.target`) and recurse into `ast.Tuple`/`ast.List`
+targets. Three extra lines in the same comprehension.
+
+## P2-6 — `find_hwnd` is silent when it enumerates windows and matches none [diagnosability]
+
+`ok/compat/window_x11.py:251-332`. The only log lines are a `debug` for ignored Win32 class
+filters (line 270) and a `warning` on a `player_id` mismatch (line 304). The `exe_names`
+miss at line 296 and the `pid <= 0` skip at line 290 are silent, so `find_hwnd` returning
+`(None, 0, None, 0, 0, 0, 0, [])` is indistinguishable between:
+
+* the game is not running (the normal case, correctly reported by the exit gate);
+* `_NET_WM_PID` is absent (measured: `xmessage` reports `pid=0` and is invisible to
+  `find_hwnd`, while `list_clients()` sees it);
+* `_NET_WM_PID` resolves to a pid this process cannot see in `/proc`.
+
+The third is not hypothetical — it is exactly **[GATE-1b]**, which `PORT.md` §2 V19 and §10
+both record as still untested: under SteamLinuxRuntime/pressure-vessel the game runs in its
+own PID namespace, and Phase 2's entire identity mechanism is `_NET_WM_PID` →
+`psutil.Process(pid)` → command line. If that boundary bites, the user sees "game not
+running" with nothing in the log to say otherwise.
+
+**Fix:** one `logger.debug` per rejected window naming the reason (`no _NET_WM_PID`, `pid N
+not resolvable`, `exe_names did not match <candidates>`), plus a single `logger.info` when
+the enumeration ran, found ≥1 toplevel, and matched none. Cheap, and it is the difference
+between five minutes and an afternoon when [GATE-1b] is finally tested.
+
+## P2-7 — `list_clients()`' fallbacks are unreachable whenever `_NET_CLIENT_LIST` is non-empty [observation, NOT verified against the game]
+
+`ok/compat/x11.py:188-206`. The three sources are tried in order, but source 1 short-circuits
+on a *non-empty* list rather than on the property being absent:
+
+```python
+value = _prop(d, root.id, '_NET_CLIENT_LIST')
+if value:
+    return [int(w) for w in value]
+```
+
+`_NET_CLIENT_LIST` contains only windows the WM **manages**. An override-redirect toplevel is
+never in it, and under a running EWMH WM the WM_STATE walk and the raw-children fallback
+below can never run to find one.
+
+**Stated honestly: I could not test this against the game.** `wine notepad` — §10's live
+evidence and the case I re-ran — produces a managed window that appears in
+`_NET_CLIENT_LIST` normally, and I have no Proton game to check the fullscreen path against.
+So this is a shape-of-the-code observation, not a demonstrated failure. It is worth a note
+because fullscreen-exclusive is the state `PORT.md` warns about in the capture layer
+(`[V7]`, and `start_controller`'s own "don't use full-screen exclusive mode" string), and
+because the cost of hardening is one line: union the WM_STATE walk's result into the
+`_NET_CLIENT_LIST` result instead of returning early, de-duplicated. Confirm against the real
+game in the same session that answers [GATE-1b] / [GATE-2].
+
+## P2-8 — `LINUX.md`'s no-display test count is off by one [documentation]
+
+`LINUX.md`, last paragraph: *"With no `DISPLAY` they skip (`35 passed, 7 skipped` for that
+file alone)"*. Measured:
+
+```
+$ env -u DISPLAY QT_QPA_PLATFORM=offscreen python -m pytest tests/test_x11_window.py
+35 passed, 8 skipped
+```
+
+Eight, which is what the same sentence says two clauses earlier (*"Eight of the 419 are live
+X11 tests"*). Change `7` to `8`.
+
+## P2-9 — nothing runs the Phase 2 exit gate [automation]
+
+`tools/check_linux_startup.py` lives in **this** repo, because it needs ok-ww's config —
+correct, and §10 says so. But every workflow here is Windows: `.github/workflows/test.yml`
+and all three `build.yml` jobs are `runs-on: windows-latest`, and no workflow invokes the
+gate. The fork's `.github/workflows/linux.yml` cannot run it, since the file is not in the
+fork.
+
+This is the same class of gap as G5 in the previous review, which was closed on the fork side
+only. The gate is the *only* automated check that the ok-ww ⇄ ok-script-linux pair actually
+starts; the fork's CI proves the fork's own suite passes, which is a weaker claim.
+
+**Fix:** add an `ubuntu-latest` job here that installs `-r requirements-linux.txt` and runs
+`xvfb-run -a python tools/check_linux_startup.py`. Note the gate hard-requires `DISPLAY`
+(line 52) and calls `os._exit` (line 45), both of which are fine under `xvfb-run`.
+
+## P2-10 — `WM_NAME` is decoded as UTF-8 though ICCCM types it `STRING` (Latin-1) [minor]
+
+`ok/compat/x11.py:234` `get_name` falls back from `_NET_WM_NAME` (UTF-8, correct) to
+`WM_NAME` and decodes both with `'utf-8', 'replace'`. A `WM_NAME` of type `STRING` is
+Latin-1 per ICCCM 2.7.1, so accented titles from a client that sets only `WM_NAME` come back
+mangled.
+
+Low impact by construction: ok-ww passes `title=None`, so `find_hwnd` never matches on the
+title, and `hwnd_title` is informational. Worth one line — decode `WM_NAME` as
+`'latin-1'` when `_NET_WM_NAME` was absent — because it costs nothing and the function is the
+one place titles enter the port.
+
+---
+
+# Phase 1 — re-verification
+
+The previous review's sixteen findings (G1-G16) were re-checked where Phase 2 could have
+regressed them. **No regressions, and every §9/§9b claim reproduces.** Executed:
+
+| Claim | Result |
 |---|---|
-| 1 | `test_template_tab::test_search_reuses_cards_and_clears_hidden_selection`, `test_web_server::{test_run_web_logs_start_failure_and_reraises, test_default_web_launch_opens_pywebview, test_pywebview_launch_mode_opens_pywebview_without_debug, test_run_web_reuses_existing_ok_instance}` |
-| 2 | `test_template_tab::{test_markup_close_emits_the_editor_coco_data, test_removing_item_only_removes_its_card}`, `test_web_server::{…, test_server_launch_mode_runs_without_opening_client}` |
+| G1 — `winreg` raises `FileNotFoundError` | holds; `LINUX.md` documents both guard styles |
+| G2 — `OPTIONAL_EXTRAS` gone | holds; sweep reports 70/70, 0 skipped |
+| G3 — suite stable | holds across this run and the Phase 2 run: 419/6/1, same 6 |
+| G3b — do not pass `-q` | holds; the run without `-q` prints its stats line |
+| G4 — Linux lock pins a commit | holds |
+| G5 — fork CI runs the gates | holds (`.github/workflows/linux.yml`); **but see P2-9 — the ok-ww side still has none** |
+| G9 — the win32con scan covers `tests/` | holds |
+| G16 — `cv2` stays undeclared, documented in `LINUX.md` | holds; the CI workflow's comment keeps the repro in step |
+| §9 C9 — the deferred half of the Phase 1 exit criterion | **now met**: `check_linux_startup.py` reaches `do_start` and selects a capture method |
 
-Every one of them **passes when its file is run alone** (`pytest tests/test_web_server.py`
-→ exactly the 2 documented failures; `pytest tests/test_template_tab.py` → 9 passed). The
-documented six reproduce exactly.
-
-Cause is visible in the log — a leaked Qt timer from an earlier test firing inside a later
-one, which pytest-qt attributes to the current test:
-
-```
-CALL ERROR: Exceptions caught in Qt event loop:
-  File "ok/ui/qt/tasks/TaskTab.py", line 82, in update_info_table
-    current_task = og.executor.current_task
-AttributeError: 'NoneType' object has no attribute 'current_task'
-```
-
-This is very likely upstream test-isolation debt rather than a port regression, but as
-written the baseline cannot serve its stated purpose ("a *new* failure outside this list is
-a regression"). Either fix the isolation (tear the `TaskTab` timer down in a fixture), or
-restate `LINUX.md`'s baseline as per-file, name the flaky set explicitly, and have CI (G5)
-run the suite per-file.
-
-### G3b — the full-suite run never prints its summary line
-
-`pytest -q` over the whole suite exits 1 with the last line of output being a `FAILED`
-row; the `N failed, M passed …` stats line is missing. Per-file runs are fine. Counts had
-to be recovered with `--junitxml`. Suspect something reaching `os._exit` at teardown —
-`ok/util/process.py:72 start_exit_watchdog` uses `hard_exit = force_exit or os._exit`.
-Track it down, or `LINUX.md` should tell readers to use `--junitxml`.
-
-## G4 — the Linux lockfile pins a mutable branch
-
-`requirements-linux.txt:29`:
-
-```
-ok-script[ocr,qt] @ git+https://github.com/RarestStatue/ok-script-linux@linux-port ; sys_platform == "linux"
-```
-
-A lockfile whose top dependency is a moving branch ref is not a lock. Pin the commit:
-`…ok-script-linux@e735836fe950a016522cf08aad107df38991ab8d`. Keeping `@linux-port` in
-`pyproject.toml` is fine — that is the range spec — but the generated lock must be
-immutable, and the regeneration recipe in the file header should say so.
-
-## G5 — nothing runs the Linux gates
-
-`LINUX.md` says the three drift tools "should be run after every rebase" and that "each one
-has caught a real regression", but no automation runs them. `.github/workflows/test.yml`
-here is `runs-on: windows-latest` only, and the fork carries just `publish.yml`.
-
-Add an `ubuntu-latest` job (fork side is the better home) that runs, in order:
-
-```sh
-python tools/scan_module_level_win32.py --check
-python tools/check_linux_imports.py
-python -m pytest tests          # see G3 re: per-file
-```
-
-`tools/gen_win32con.py --check` is the odd one out — see G10.
-
-## G6 — the fork inherits upstream's PyPI publish workflow
-
-`.github/workflows/publish.yml` in the fork still triggers on `push: tags: v*`, builds, and
-uploads to PyPI. The fork's `pyproject.toml:11` keeps `name = "ok-script"` (deliberately,
-so `ok-script>=2.0.5` resolves). Tagging the fork `vX.Y.Z` therefore attempts to publish a
-fork build under the upstream project name. Delete the workflow, or gate it on
-`if: github.repository == 'ok-oldking/ok-script'`.
-
-## G7 — file descriptor `0` is a falsy mutex handle
-
-The POSIX handle from `ok/compat/single_instance.py:acquire` is an `int` fd, but
-`ok/util/process.py:291` (`check_mutex`) and `:213` (`_release_mutex`) both test it with
-`if _mutex_handle:`. If the app is launched with fd 0 closed, `os.open` returns 0, the
-re-entrancy short-circuit misfires and the lock is never released at exit. Use
-`if _mutex_handle is not None:` in both places. (The Windows branch is unaffected — a
-`HANDLE` is never 0.)
-
-## G8 — `acquire()` conflates "held" with "could not open"
-
-`single_instance.acquire` returns `None` both when another process holds the flock and when
-`os.open` fails (read-only `XDG_RUNTIME_DIR`, exhausted fds, SELinux denial). In the second
-case `_check_mutex_posix` waits 5s, then calls `_terminate_previous_instances`, which
-scans for and `kill()`s any process matching the app signature — hunting a previous
-instance that does not exist. Return a sentinel (or raise) for the open failure and let
-`_check_mutex_posix` bail out instead of escalating to a kill.
-
-## G9 — the win32con coverage scan does not see `tests/`
-
-`tools/gen_win32con.py:117` and `tests/test_linux_win32_compat.py:60` both walk only
-`REPO/'ok'`. `tests/test_notifications.py` references `win32con.VK_ESCAPE`, `VK_END`,
-`VK_BACK`, `VK_DELETE`, `VK_CONTROL` and `CF_DIB`. All six happen to be in the generated
-94 today, so nothing is broken — but a test that starts using a new constant will fail at
-run time with the generator's "regenerate with …" `AttributeError` instead of failing the
-`--check` gate. Add `tests/` to both walks.
-
-(Downstream ok-ww is clean: it uses `win32api.{Get,Set}CursorPos` and `winreg`, no
-`win32con`.)
-
-## G10 — `gen_win32con.py --check` needs the network
-
-It downloads the pywin32 311 `win_amd64` wheel from PyPI on every invocation, including
-`--check`. That makes the cheapest-looking of the three gates the one that fails in an
-offline or rate-limited CI runner. Either cache the extracted `win32con.py` (with a hash)
-in the repo, or mark the gate as network-dependent in `LINUX.md` and keep it out of the
-required CI set from G5.
-
-## G11 — three Phase-1 `ok/device/` edits were not made, and the deferral is unrecorded
-
-PORT.md §4/1b states "**The only edits this phase needs in `ok/device/`**" and lists:
-
-1. `capture_methods/__init__.py` — import `X11Window`/`X11CaptureMethod`, rebind `HwndWindow`
-2. `interaction_methods/__init__.py` — import `WinePostMessageInteraction`
-3. `capture_methods/update.py` — register the new capture methods
-
-None exist in the fork. That is the right call — all three import modules Phases 2-4 have
-not written yet — but neither §9 nor `LINUX.md` records it, so the next reader will diff
-the plan against the tree and think Phase 1 is incomplete. Move these three bullets into
-Phase 2/3 in PORT.md and note the move in §9.
-
-## G12 — the `requirements.txt` divergence is only in a commit message
-
-PORT.md §4/1a instructs: regenerate this repo's `requirements.txt` with `pip-compile` and
-"check the regenerated file no longer lists those four". The implementation deliberately
-did the opposite — kept `requirements.txt` as the Windows lock (CI is windows-latest) and
-added `requirements-linux.txt` alongside. The reasoning is in `9effbc3`'s commit message
-but not in PORT.md §9, which is where the other five corrections live. Add it as C7.
-
-## G13 — the Phase-1 exit criterion's second half was not reached
-
-PORT.md §4/1c: "Follow the script with a headless `OK(config)` construction
-(`QT_QPA_PLATFORM=offscreen`) up to the point where `do_start` selects a capture method —
-that is the step that actually proves the GUI leaves are covered."
-
-Startup stops earlier, at `get_monitors_bounds()` (Phase 2 work), so `do_start` is never
-reached and that proof does not exist yet. The fork's Qt test files (`test_task_ui`,
-`test_template_tab`, `test_start_tab_overlay`, `test_core_ui_services`) cover much of the
-same ground incidentally. State explicitly that this criterion carries into Phase 2's exit
-gate rather than leaving it silently unmet.
-
-## G14 — the root `conftest.py` is dead code with a stale rationale
-
-`conftest.py` says "A root conftest is the earliest hook that is guaranteed to run first",
-but its own `from ok.compat.win32_stub import install` executes `ok/__init__.py` first,
-which already calls `install()` (`ok/__init__.py:14-19`). By the time `conftest`'s
-`install()` runs, `_installed` is already `True`. Harmless, but either delete it or rewrite
-the docstring to say it is belt-and-braces, so nobody later "fixes" `ok/__init__.py`
-believing conftest covers pytest.
-
-## G15 — `install()` monkeypatches the global `ctypes` module [note, no action needed yet]
-
-`ctypes.windll`, `.oledll`, `.WinDLL`, `.OleDLL`, `.HRESULT` and `.WINFUNCTYPE` are set
-process-wide, so any third-party library that platform-sniffs with
-`hasattr(ctypes, 'windll')` will conclude it is on Windows. Audited the full installed
-dependency set (`psutil`, `pynput`, `mouse`, `pyappify`, `darkdetect`, `pywebview`,
-`setuptools`, PySide6 stack): **none** do this — they all branch on `platform.system()` or
-`sys.platform`. Record the audit as an assumption in the `win32_stub` docstring so a future
-dependency addition gets re-checked.
-
-## G16 — `cv2` is an undeclared ok-script dependency, and it breaks the documented repro
-
-`ok/util/color.py:1` and ~10 other modules (`DeviceManager`, `FeatureSet`,
-`core/screenshot.py`, `bitblt_utils` …) `import cv2` at module scope, but `opencv-python`
-appears nowhere in the fork's `pyproject.toml`, and `onnxocr-ppocrv5` does not pull it in
-(`Requires: pillow, pyclipper, shapely`). It only arrives because ok-ww declares it.
-
-Consequence for this port: following `LINUX.md`'s own instructions — "`pytest tests` with
-the `qt`, `web`, `adb` and `ocr` extras installed" — gives 20 collection errors, and
-`tools/check_linux_imports.py` reports **35/70 failed**, all `No module named 'cv2'`. That
-reads exactly like a port regression and cost time in this review.
-
-Pre-existing upstream metadata bug, not something Phase 1 introduced. Fix it in the fork
-(`"opencv-python" ` in the `default` extra, which is where `numpy`/`Pillow` already live) —
-it is a one-line, Linux-neutral change — and add `opencv-python` to `LINUX.md`'s repro
-command either way.
+One Phase 1 item Phase 2 exercised for the first time, worth recording as *confirmed
+correct* rather than as a gap: the `ok/util/window.py` bottom-of-file shadow does not create
+an import cycle. `ok.compat.window_x11` reaches back for `compare_path_safe` and
+`get_player_id_from_cmdline` from inside function bodies only (`window_x11.py:133`, `:272`),
+so either module can be imported first. Verified by importing each first in a fresh
+interpreter.
 
 ---
 
-## Suggested order
+# What shipped
 
-1. **G1** — one-word correctness fix plus a test that would have caught it.
-2. **G2**, **G16** — the two gate/repro defects that let a red build look green.
-3. **G4**, **G5**, **G6** — supply-chain and automation hygiene before Phase 2 lands.
-4. **G3** / **G3b** — make the test baseline mean something.
-5. **G7**, **G8**, **G9**, **G10** — small hardening.
-6. **G11**, **G12**, **G13**, **G14**, **G15** — documentation truthfulness; cheap, and
-   Phase 2 starts by reading these files.
+All ten Phase 2 findings are closed; the table at the top of this file records each
+outcome, and `PORT.md` §10b records the corrections worth keeping. What is **not** closed
+is P2-7's underlying question and the two gates it belongs to: `list_clients` now
+enumerates override-redirect toplevels, but no one has yet pointed it at a
+fullscreen-exclusive Proton game. That belongs to the same session that answers
+[GATE-1b] and [GATE-2], along with the mute path's descendant-pid fallback.
 
-None of these block Phase 2. G1 and G2 should land before it.
+The original order, kept for the record:
+
+# Suggested order
+
+1. **P2-1** — the only finding that corrupts game state (an unboundedly growing window) and
+   that fires on the default config. Ship the regression test with it.
+2. **P2-2** — silent feature death for most of the userbase; one-line fix.
+3. **P2-4**, **P2-5** — the two drift gates are what Phase 3 and every rebase will lean on;
+   fixing them before Phase 3 lands is much cheaper than after.
+4. **P2-3**, **P2-6** — correctness of contract and diagnosability, both needed before
+   Phase 4's foreground fallback and before [GATE-1b] is tested.
+5. **P2-9** — automation, before Phase 3 changes the startup path again.
+6. **P2-7**, **P2-8**, **P2-10** — cheap; P2-7 stays open until the game can be driven.
+
+None of these block Phase 3. P2-1 and P2-2 should land before it.
+
+*(All ten landed before it, in one change: ok-script-linux `9b33a03`, plus this repo's CI
+job and lock repin.)*
