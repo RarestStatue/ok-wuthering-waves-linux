@@ -809,10 +809,13 @@ Every lazily-mapped symbol must resolve — that is what actually exercises `Mai
 
 This check only resolves *module-level* code. `MainWindow` reaches `ok/ui/qt/tasks/TemplateTab.py:19` (→ `windows_thumbnail`, which is already platform-guarded and whose `open()` returns `False` on Linux **[V16]**) from inside `__init__`, not at import. Follow the script with a headless `OK(config)` construction (`QT_QPA_PLATFORM=offscreen`) up to the point where `do_start` selects a capture method — that is the step that actually proves the GUI leaves are covered.
 
-**That second half is deferred and still unmet — it carries into Phase 2's exit gate** [see §9 C9]. Startup stops earlier, in `get_monitors_bounds()`, which is Phase 2's own first line of work, so `do_start` is never reached and the proof does not exist yet. The fork's Qt test files (`test_task_ui`, `test_template_tab`, `test_start_tab_overlay`, `test_core_ui_services`) cover much of the same ground incidentally. Phase 2 is not done until this runs.
+**That second half was deferred to Phase 2's exit gate [see §9 C9], and Phase 2 met it — see §10.** It is now `tools/check_linux_startup.py` in this repo: `OK(config)` headless, then `update_pc_device()`, then `do_start()` through to capture-method selection. It caught one blocker nothing else could have (`ok/core/screenshot.py`'s `os.environ['WINDIR']`, §10 D6). The fork's Qt test files (`test_task_ui`, `test_template_tab`, `test_start_tab_overlay`, `test_core_ui_services`) cover much of the same ground incidentally.
 
 
 ### Phase 2 — `X11Window` (replaces `HwndWindow`)
+
+**Implemented 2026-09-01. Read §10 alongside this section — six of the instructions below
+turned out to be wrong or unnecessary when executed, and §10 records which.**
 
 New file `ok/device/capture_methods/x11_window.py`. It must be **attribute-compatible** with `HwndWindow` — the rest of ok-script and ok-ww read these directly.
 
@@ -1378,8 +1381,8 @@ in 1b changed — rebinding still beats guarding, for the reasons given there.
 lazy-import sweep *and* a headless `OK(config)` construction that gets as far as `do_start`
 selecting a capture method. The sweep passes 70/70; the construction stops earlier, at
 `get_monitors_bounds()`, which is Phase 2's own first line of work. So the "GUI leaves are
-covered" proof does not exist yet, and it moves to Phase 2's exit gate rather than being
-quietly dropped.
+covered" proof did not exist at the end of Phase 1, and it moved to Phase 2's exit gate
+rather than being quietly dropped. **Phase 2 met it — see §10.**
 
 **Two blockers §4 did not mention at all, both on the startup path before any window code:**
 
@@ -1511,6 +1514,152 @@ consecutive runs of the same command; ok-ww **12/12**;
 
 Everything above is in the fork except the lockfile pin and this record. Phase 2 was not
 blocked by any of it.
+
+---
+
+## 10. Phase 2 implementation record (2026-09-01) — what the plan got wrong
+
+Phase 2 is **done and verified**. The window layer is real: ok-ww finds the game's X11
+window, tracks its geometry, focus and minimized state, mutes it while backgrounded, and
+hands `DeviceManager` a PC device — so startup now runs all the way to capture-method
+selection, which closes the half of the Phase-1 exit criterion §9 C9 deferred.
+
+In the fork (`RarestStatue/ok-script-linux`, branch `linux-port`):
+
+```
+ok/compat/x11.py                          new   python-xlib window layer, nothing raises
+ok/compat/window_x11.py                   new   the Linux ok.util.window bodies
+ok/device/capture_methods/x11_window.py   new   X11Window + monitors + pactl mute
+tests/test_x11_window.py                  new   42 tests, 7 of them against a real X server
+ok/device/capture_methods/__init__.py     edit  HwndWindow -> X11Window on Linux
+ok/util/window.py                         edit  shadow the Win32 bodies on non-win32
+ok/core/screenshot.py                     edit  per-platform annotation font (see D6)
+.github/workflows/linux.yml               edit  run the suite under xvfb-run
+```
+
+In this repo: `tools/check_linux_startup.py`, the Phase 2 exit gate. It lives here rather
+than in the fork because it needs ok-ww's own config.
+
+Six instructions in §4's Phase 2 were wrong or unnecessary. Corrections, so nobody
+re-derives them:
+
+**D1. `X11Window` is a subclass, not a reimplementation.** §4 lists ~20 methods to supply.
+Eleven of them are pure — `get_abs_cords`, `get_capture_origin`, `get_top_window_cords`,
+`capture_target_signature`, `update_window`, `update_frame_size`, `frame_ratio`, `stop`,
+`_front_hwnd_candidates`, `_top_hwnd_info`, `__str__` — and are inherited from
+`HwndWindow` unchanged, so upstream keeps owning them across rebases. Only the constructor,
+eight Win32-bound members (`validate_mute_config`, `update_window_size`, `handle_mute`,
+`is_foreground`, `bring_to_front`, `try_resize_to`, `do_update_window_size`, `hwnd_title`)
+and one new one (`is_minimized`) are written here. The constructor is a
+*copy* rather than a `super().__init__()` call for one reason: upstream's body calls
+`get_monitors_bounds()` out of *its own* module globals, which is `win32api`. A drift test
+walks both classes' ASTs and fails if upstream's constructor gains an attribute the copy
+does not set, or a method the subclass does not have.
+
+**D2. Two of the five `hwnd_window.py` helpers need no Linux version.** §4 says to port all
+five alongside `X11Window`. `check_pos` and `is_window_in_screen_bounds` are pure rectangle
+arithmetic — including the 20-pixel tolerance — so they are imported from upstream and
+re-exported. They still have to be *re-exported*, because
+`capture_methods/__init__.py:21` imports all five as one group and the Linux rebinding
+shadows the group as a whole. Only `get_monitors_bounds`, `get_mute_state` and
+`set_mute_state` needed Linux bodies.
+
+**D3. The `ok/util/window.py` contracts are shadowed in place, at the bottom of that file.**
+§4 says what to supply and never says where. Putting the import at the end of
+`ok/util/window.py` matters: `ok/compat/window_x11.py` reaches back into that module for
+`compare_path_safe` and `get_player_id_from_cmdline`, and it does so from inside function
+bodies, so the cycle cannot bite whichever module is imported first. Two names outside the
+[V24] eleven are shadowed as well — `get_exe_by_hwnd` and `is_window_minimized`. Nothing in
+either tree imports them (verified), but their bodies are Win32, and a module that is
+half-Linux is a trap for the next reader.
+
+**D4. The size floor is upstream's `> 10px`, not `min_size`.** §4 says to discriminate Wine's
+1×1 `Default IME` helper toplevels — which share the game's pid — by ignoring windows
+smaller than `config.py`'s `supported_resolution.min_size` (1280×720). Upstream's own
+`width <= 10 or height <= 10` floor already discards them, and a `min_size` floor would
+reject a legitimately small or windowed game outright. Keeping upstream's number also keeps
+one fewer ok-ww-specific constant in the fork.
+
+**D5. One Wine command line names several `.exe` files, and the first one is the loader.**
+§4 says to match `/proc/<pid>/cmdline` against `config['windows']['exe']` and stops there.
+A real Proton command line runs `.../wine C:\windows\system32\start.exe /exec <game>.exe`,
+so taking the first `.exe` identifies `start.exe`. `_HELPER_EXES` demotes the Wine and Steam
+helpers below the real executables when picking a process's *primary* name, and
+`exe_names` matching considers every candidate on the line rather than only the primary —
+which is what makes `Client-Win64-Shipping.exe` resolve wherever Proton puts it.
+
+**D6. A blocker on the startup path that no section mentions:** `ok/core/screenshot.py`
+does `os.path.join(os.environ['WINDIR'], 'Fonts')` in `Screenshot.__init__`, which runs
+during `OK()` construction. On Linux that is a `KeyError`, not a `NotImplementedError` from
+the stub, so nothing in the Phase 1 machinery could have predicted it. Fixed with a
+per-platform lookup: Windows keeps one flat font directory, Linux nests fonts by family
+across several roots that vary by distro, and returning `None` (PIL's built-in font) is a
+supported answer on both. This is the class of defect §9 C9's deferred second half exists
+to catch, and it was the first thing that half caught.
+
+**Live evidence [V27] — the layer was driven against a real Wine window, not only fakes.**
+`wine notepad` in a throwaway prefix, with the code under test:
+
+```
+clients:    0x1200008 (xwaylandvideobridge)  0x3a00070 (Steam)  0x4a00001 (notepad)
+0x4a00001   pid 26310   name 'Untitled - Notepad'   exe ('notepad.exe', 'C:\windows\system32\notepad.exe')
+find_hwnd   ('Untitled - Notepad', 77594625, 'C:\windows\system32\notepad.exe', 0, 0, 1360, 992, [])
+bounds      (1924, 30, 1360, 1020, 1360, 992, 1.0)      # window rect = client + 28px title bar
+foreground  True
+after xdotool windowminimize:
+  is_window_minimized True   WM_STATE 3 (Iconic)   viewable False   foreground False
+  get_abs_geometry    (1924, 30, 1360, 992)   <- geometry survives iconification
+```
+
+That last line is the whole argument for the explicit minimized test in `pos_valid`: the
+rectangle an iconified window reports is still perfectly on-screen, so `check_pos` alone
+returns True forever and the executor is never paused. A full `X11Window` driven against
+the same window reported `exists=True visible=True pos_valid=True`,
+`real=(0, 0, 1360, 992)`, `top_hwnd == hwnd`, `hwnds=[]`, and a capture origin equal to the
+window origin.
+
+**Verification state.**
+
+* Fork suite: **418 passed / 6 failed / 1 skipped** (Python 3.12, `QT_QPA_PLATFORM=offscreen`,
+  all extras plus `opencv-python`). The six are the same Windows-only failures §9b
+  enumerates — no new ones. 42 of the passes are Phase 2's.
+* The three drift gates are unchanged and green: 27 module-level Win32 offenders with the
+  same 4 calling a loader at import, 94 `win32con` constants current, **70/70**
+  `_LAZY_IMPORTS` entries resolved.
+* Phase 2 exit gate, `tools/check_linux_startup.py`, on this machine with the game **not**
+  running:
+
+  ```
+  OK    OK(config) constructed
+  OK    device layer uses X11Window
+  OK    monitors [(1920, 0, 4480, 1440), (0, 0, 1920, 1080)]
+  OK    pc device pc: connected=False 0x0 (game not running, which is a valid state)
+  OK    do_start selected BitBlt_True + PostMessageInteraction
+  PASS  startup reaches capture-method selection
+  ```
+
+  `BitBlt` is the *expected* answer today, and is not a Phase 2 defect: ok-ww's
+  `config.py` still says `capture_method: ['WGC', 'BitBlt_RenderFull']` until Phase 5b, and
+  the Windows backends import cleanly on Linux **[V22]**. It is selected and can never
+  produce a frame. Phase 3 adds `X11`/`X11_Composite` and the gate starts naming them
+  without needing an edit.
+* CI (`.github/workflows/linux.yml`) now runs the suite under `xvfb-run`, so the seven live
+  X11 tests execute there instead of skipping. Xvfb has no window manager; the three tests
+  that need one (iconify, activation, resize) skip themselves.
+
+**Known gaps left by Phase 2, none of them blocking Phase 3:**
+
+* **The mute path has never seen the game's audio.** `get_mute_state`/`set_mute_state` are
+  tested against captured `pactl list sink-inputs` text, and the descendant-pid fallback —
+  for the case where a Proton game opens audio from a helper process rather than the one
+  owning the window — is a reasoned guess, not a measurement. Confirm it in the same
+  session that answers [GATE-2].
+* **`scaling` is hardcoded to 1.0.** Correct for Xwayland's device pixels; a fractional
+  desktop scale would need a per-monitor factor. Enhancement, as §4 says.
+* **`class_name` / `top_hwnd_class` are accepted and ignored**, per **[V11]** — so ok-ww's
+  launcher/login-dialog handling has no Linux equivalent. It costs nothing until someone
+  tries to automate the launcher.
+* [GATE-1b] and [GATE-2] are untouched. Phase 2 could not test them and did not try.
 
 ---
 
