@@ -1530,7 +1530,7 @@ In the fork (`RarestStatue/ok-script-linux`, branch `linux-port`):
 ok/compat/x11.py                          new   python-xlib window layer, nothing raises
 ok/compat/window_x11.py                   new   the Linux ok.util.window bodies
 ok/device/capture_methods/x11_window.py   new   X11Window + monitors + pactl mute
-tests/test_x11_window.py                  new   42 tests, 7 of them against a real X server
+tests/test_x11_window.py                  new   43 tests, 8 of them against a real X server
 ok/device/capture_methods/__init__.py     edit  HwndWindow -> X11Window on Linux
 ok/util/window.py                         edit  shadow the Win32 bodies on non-win32
 ok/core/screenshot.py                     edit  per-platform annotation font (see D6)
@@ -1540,7 +1540,7 @@ ok/core/screenshot.py                     edit  per-platform annotation font (se
 In this repo: `tools/check_linux_startup.py`, the Phase 2 exit gate. It lives here rather
 than in the fork because it needs ok-ww's own config.
 
-Six instructions in §4's Phase 2 were wrong or unnecessary. Corrections, so nobody
+Seven of §4's Phase 2 instructions were wrong, unnecessary, or missing. Corrections, so nobody
 re-derives them:
 
 **D1. `X11Window` is a subclass, not a reimplementation.** §4 lists ~20 methods to supply.
@@ -1597,6 +1597,13 @@ across several roots that vary by distro, and returning `None` (PIL's built-in f
 supported answer on both. This is the class of defect §9 C9's deferred second half exists
 to catch, and it was the first thing that half caught.
 
+**D7. `bring_to_front` has to de-iconify, and `_NET_ACTIVE_WINDOW` alone does not promise
+that.** §4 specifies the activation client message and says failure must not raise; it does
+not mention that upstream's Windows path calls `ShowWindow(hwnd, SW_RESTORE)` first when the
+window is iconic. The X11 equivalent is `MapWindow` (ICCCM 4.1.4 — mapping is how a client
+returns a window to the normal state), a no-op when the window is already mapped, so
+`activate()` maps before it asks. Covered by a live test against a real WM.
+
 **Live evidence [V27] — the layer was driven against a real Wine window, not only fakes.**
 `wine notepad` in a throwaway prefix, with the code under test:
 
@@ -1620,9 +1627,9 @@ window origin.
 
 **Verification state.**
 
-* Fork suite: **418 passed / 6 failed / 1 skipped** (Python 3.12, `QT_QPA_PLATFORM=offscreen`,
+* Fork suite: **419 passed / 6 failed / 1 skipped** (Python 3.12, `QT_QPA_PLATFORM=offscreen`,
   all extras plus `opencv-python`). The six are the same Windows-only failures §9b
-  enumerates — no new ones. 42 of the passes are Phase 2's.
+  enumerates — no new ones. 43 of the passes are Phase 2's.
 * The three drift gates are unchanged and green: 27 module-level Win32 offenders with the
   same 4 calling a loader at import, 94 `win32con` constants current, **70/70**
   `_LAZY_IMPORTS` entries resolved.
@@ -1643,9 +1650,13 @@ window origin.
   the Windows backends import cleanly on Linux **[V22]**. It is selected and can never
   produce a frame. Phase 3 adds `X11`/`X11_Composite` and the gate starts naming them
   without needing an edit.
-* CI (`.github/workflows/linux.yml`) now runs the suite under `xvfb-run`, so the seven live
+* CI (`.github/workflows/linux.yml`) now runs the suite under `xvfb-run`, so the eight live
   X11 tests execute there instead of skipping. Xvfb has no window manager; the three tests
-  that need one (iconify, activation, resize) skip themselves.
+  that need one (iconify, de-iconify-on-activate, resize) skip themselves. The workflow also
+  had to start installing `opencv-python`: both runs since it landed in Phase 1 were red,
+  the lazy-import sweep reporting 36/70 `No module named 'cv2'` — the trap §9b documented in
+  `LINUX.md` and then walked straight into in CI. Green now: **416 passed, 3 skipped,
+  6 deselected**.
 
 **Known gaps left by Phase 2, none of them blocking Phase 3:**
 
