@@ -87,11 +87,25 @@ def main():
           f'{device["width"]}x{device["height"]} '
           f'({"game window found" if running else "game not running, which is a valid state"})')
 
-    try:
-        device_manager.do_start(notify=False)
-    except Exception as e:
-        traceback.print_exc()
-        fail(f'do_start() raised {type(e).__name__}: {e}')
+    # `do_start` needs a *preferred* device, and on a first run there is none: it calls
+    # `set_preferred_device()` and returns, having selected nothing. The real app recovers
+    # because that branch emits `communicate.adb_devices`, which re-enters start once the
+    # UI reacts. A gate that calls it once therefore only passes on a machine that has run
+    # the app before -- `configs/` is gitignored, so a developer has `devices.json` and CI
+    # does not, and the whole check silently depended on that. Drive both passes.
+    def start(label):
+        try:
+            device_manager.do_start(notify=False)
+        except Exception as e:
+            traceback.print_exc()
+            fail(f'do_start() raised {type(e).__name__}: {e} ({label})')
+
+    start('first pass')
+    if device_manager.capture_method is None:
+        if device_manager.get_preferred_device() is None:
+            fail('do_start() selected nothing and set no preferred device either')
+        print('OK    first do_start only set the preferred device; re-entering as the app does')
+        start('second pass')
 
     if device_manager.capture_method is None:
         fail('do_start() selected no capture method')

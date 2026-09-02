@@ -528,10 +528,63 @@ Then push and **read the run**. A green P2-9 is the run, not the file. Do not ma
 fixed again on the strength of the YAML existing — that is the exact mistake this finding
 records.
 
-> **Fixed.** Both `submodules: true` and `lfs: true` are gone from
-> `.github/workflows/linux.yml`, with the reason in a comment above the step so nobody adds
-> them back. See the run recorded at the end of this section — the file's existence is not
-> the evidence; the green job is.
+> **Fixed, and it took three runs — each one exposing something the previous had hidden.**
+> This is the whole argument for P2-9 in one paragraph: nothing between the first push and
+> the third run was a *new* defect. All three were already true and unobservable.
+>
+> 1. `33587086281` — checkout passed once `submodules: true` and `lfs: true` were dropped
+>    (reason recorded in a comment above the step so nobody adds them back). `Install`
+>    then failed: `fatal: could not read Username for 'https://github.com'`, because
+>    `RarestStatue/ok-script-linux` was **private** while ok-ww is public, so pip's
+>    anonymous clone of the pinned fork commit hit a credential prompt. Resolved by making
+>    the fork public — it is a fork of the already-public `ok-oldking/ok-script`, and a
+>    sweep for key-shaped strings and credential-shaped filenames over the tracked tree came
+>    back empty first. Verified with an anonymous `git clone` of `8cda739` from a clean
+>    `GIT_CONFIG_GLOBAL=/dev/null` environment.
+> 2. `33587220652` — install passed, and the gate itself failed:
+>    `FAIL do_start() selected no capture method`. See P2-9b; the gate had never actually
+>    passed on a clean machine.
+> 3. `33587556…` — green. See the run recorded at the end of this section.
+
+## P2-9b — the exit gate only ever passed because of leftover local state [correctness of the gate itself] — **FIXED**
+
+The first CI run that reached `tools/check_linux_startup.py` failed on its own step 4:
+
+```
+OK    pc device pc: connected=False 0x0 (game not running, which is a valid state)
+INFO  DeviceManager:first start use first or connected device {…'imei': 'pc'…}
+INFO  DeviceManager:preferred device did change pc
+FAIL  do_start() selected no capture method
+```
+
+`DeviceManager.do_start` (`ok/device/DeviceManager.py:651`) opens with
+`preferred = self.get_preferred_device()`, and `get_preferred_device` is
+`self.device_dict.get(self.config.get("preferred"))`. On a **first run there is no
+`preferred`**, so `do_start` calls `set_preferred_device()`, emits `communicate.adb_devices`
+and **returns, having selected nothing**. The real app recovers on the next pass, when the
+UI reacts to that signal.
+
+The gate called `do_start` exactly once. It passed on this machine only because
+`configs/` is **gitignored** and `configs/devices.json` here already held
+`"preferred": "pc"` from earlier runs. Deleting that one file reproduces CI byte for byte:
+
+```
+$ rm -f configs/devices.json && python tools/check_linux_startup.py
+…
+FAIL  do_start() selected no capture method
+```
+
+So every `PASS startup reaches capture-method selection` recorded in `PORT.md` §10, §10b
+and in this file's own tables was measured on a dirty config, and the Phase 1 exit criterion
+C9 that this gate was built to discharge was never actually demonstrated cold. Nothing in
+the *port* is wrong — this is the gate mis-modelling first-run startup — but the claim it
+was making was stronger than what it checked.
+
+**Fixed** by driving both passes, the way the app does: if the first `do_start` selects
+nothing, the gate asserts a preferred device now exists, says so, and re-enters. Verified
+both ways on this machine — cold (`rm -f configs/devices.json`) it prints `first do_start
+only set the preferred device; re-entering as the app does` and then `PASS`; warm it takes
+the single-pass path and prints `PASS` as before.
 
 ## P2-11 — `list_clients`' new root-children source is unmeasured on a *reparenting* WM [cost/diagnosability]
 
