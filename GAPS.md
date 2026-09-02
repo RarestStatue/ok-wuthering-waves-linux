@@ -2865,8 +2865,8 @@ below is the one that counts.
 
 | | |
 |---|---|
-| ok-script-linux | `5f1987e` on `linux-port`, pushed, clean; CI recorded in the follow-up commit |
-| ok-ww | this commit on `master`; CI recorded in the follow-up commit |
+| ok-script-linux | `5f1987e` on `linux-port`, pushed, clean, **signed**; CI `Linux port gates` **33693264759** `success` |
+| ok-ww | `57a1234` on `master`, pushed, clean, **signed**; CI `Linux startup gate` **33693364875** `success`, and its log carries the renamed step plus `OK    do_start selected X11 + PostMessageInteraction` and `OK    capture backend is X11CaptureMethod` |
 | Lock | `requirements-linux.txt:35` -> `5f1987e` |
 | Phases 0-2 | Untouched by this pass and still green: 74 `test_x11_window.py` tests, 27 offenders, 70/70 lazy imports |
 | Phase 3 | Six of seven findings closed in code and docs; P3-5 is the only Phase 3 item left and it needs the game |
