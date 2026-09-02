@@ -47,7 +47,8 @@
 > `450 passed`, and the nested-`Xwayland` control flipped `0x200000` (frame) to `0x200001`
 > (client), `is_active` False to True, `activate` `False in 0.51s` to `True in 0.00s`.
 > P2-15 and P2-16 are one push each: `linux-port` is now `12e297c` on the remote, the lock
-> pins it, and the pin is fetchable with no credentials. **P2-17's recommended option (a)
+> pins it, the pin is fetchable with no credentials, and run **33669383034** on `6fac179`
+> is green — the first CI evidence for this pair. **P2-17's recommended option (a)
 > is disproven** — `test.yml` and `build.yml`'s first job both run `tests\*.py`, and seven
 > of those tests load `ok_templates/*.png`, so dropping `submodules: true` trades a
 > checkout failure for a test failure. Only a repin fixes those workflows, and that is the
@@ -70,7 +71,7 @@
 > | P2-12 | fixed — an unresolvable pid reports once instead of twice, and a title-only miss says which title did not match instead of ending on a dangling `: ` |
 > | P2-14 | fixed — `get_focus_toplevel` resolves focus through ICCCM `WM_STATE` (`_client_window`), with the root's child kept as the no-WM fallback and one level of descent for a frame-focusing WM. Live control on a nested `Xwayland :9`: frame `0x200000` -> client `0x200001`, `is_active` False -> True, `activate` `False in 0.51s` -> `True in 0.00s`. ok-script-linux `f41745b`, five new unit tests |
 > | P2-15 | fixed — `linux-port` pushed; `origin/linux-port` is `12e297c` and the lock pins it. Confirmed fetchable with no credentials (`GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper= ls-remote`), which is how pip clones it |
-> | P2-16 | fixed — ok-ww `master` pushed with the repin, so a CI run finally covers this pair. Run recorded in the sixth pass below |
+> | P2-16 | fixed — ok-ww `master` pushed with the repin. `Linux startup gate` run **33669383034** on `6fac179` is `success`, the first CI evidence for the `6fac179` ⇄ `12e297c` pair; both `do_start` passes are in its log |
 > | P2-17 | **open, inherited, and not ours to close** — the fifth pass's option (a) is disproven: both workflows run `tests\*.py`, and seven of those tests read `ok_templates/*.png`, so dropping `submodules` only moves the failure. Repinning the submodule is the templates owner's call; recorded, not changed |
 >
 > Two things the fixes cost, both measured and both accepted: `list_clients` went 0.05ms ->
@@ -1835,3 +1836,28 @@ the tested tree and the documented counts are the same tree. The fifth pass's wa
 still stands in the other direction: **do not repin backwards.** `8cda739` drops P2-11,
 P2-12 and P2-14; `693a496` is fetchable now but predates P2-14.
 
+
+**The run.** `Linux startup gate` **33669383034**, `6fac179`, conclusion `success` — the
+first CI evidence for the `6fac179` ⇄ `12e297c` pair, and the first time the Install step
+has resolved this fork pin from a credential-less clone:
+
+```
+Install            Building wheel for ok-script (pyproject.toml): finished with status 'done'
+Install            Successfully installed ... ok-script-2.0.5+linux.1 ... python-xlib-0.33 ...
+Phase 2 exit gate  OK    first do_start only set the preferred device; re-entering as the app does
+Phase 2 exit gate  OK    do_start selected BitBlt_True + PostMessageInteraction
+Phase 2 exit gate  PASS  startup reaches capture-method selection
+```
+
+Read from the run, not the YAML — P2-9a's rule. Both `do_start` passes are in the log,
+which is the thing P2-9b added and the thing a green tick alone would not prove.
+
+## State after this pass
+
+| | |
+|---|---|
+| ok-script-linux | `12e297c` on `linux-port`, **pushed**; working tree clean |
+| ok-ww | `6fac179` on `master`, **pushed**; CI green |
+| Lock | `requirements-linux.txt:35` → `12e297c`, fetchable anonymously |
+| Open | **P2-17 only**, inherited, and not this port's to close |
+| Phase 3 | Unblocked. Nothing in the fifth or sixth pass touches what §4 Phase 3 depends on |
