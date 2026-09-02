@@ -19,13 +19,40 @@
 > what was checked and how. P2-11 and P2-12 were the only work left, and both were written
 > up below as drop-in patches — exact file, exact line, exact body, exact tests.
 >
-> **Fourth pass, 2026-09-02: both are now fixed, and Phase 2 has no open findings.**
+> **Fourth pass, 2026-09-02: both are now fixed.**
 > P2-12 went in exactly as specified (`c23646d`). P2-11's blocking measurement turned out
 > not to be blocked — a nested `Xwayland :9` and a ~50-line reparenting WM reproduce the
 > shape with no root and no package — and it resolved to a code fix, not documentation
 > (`4ca767e`). Fork suite **445 passed / 6 failed / 1 skipped**, `test_x11_window.py`
 > **69 passed** (56/13 with no `DISPLAY`), every gate green including the cold startup
 > gate. See **[Fourth pass](#fourth-pass--the-last-two-findings-closed-2026-09-02)**.
+>
+> **Fifth pass, 2026-09-02: every one of the thirteen fixes re-confirmed in the code and
+> re-executed — and four findings are open again.** None is a regression.
+> **[P2-14](#p2-14--is_active-is-false-for-a-focused-window-under-a-reparenting-wm-correctness--open)**
+> is a real correctness defect four passes walked past: under a reparenting WM
+> `x11.is_active()` is False for the window that holds the input focus, which inverts
+> `visible`, `clickable()` and `MouseResetTask`, and makes `activate()` report a refusal of
+> focus it was granted. Reproduced on a nested `Xwayland :9`, patched, measured
+> (**74 / 61-13 / 450**) and reverted; the patch below is drop-in.
+> **P2-15** and **P2-16** are publication gaps of exactly P2-9a's kind: the fork commit the
+> Linux lock pins (`693a496`) **exists on no remote**, and ok-ww's repin commit `ec496b0` is
+> **unpushed**, so no CI run has ever covered this pair. **P2-17** is inherited: `test.yml`
+> and `build.yml` still carry the submodule checkout that P2-9a had to remove from
+> `linux.yml`. See **[Fifth pass](#fifth-pass--phase-0-2-re-verification-2026-09-02)**.
+>
+> **Sixth pass, 2026-09-02: the four are closed, and one of them closed differently than
+> the fifth pass predicted.** P2-14 went in exactly as specified (ok-script-linux
+> `f41745b`) — `74 passed`, `61 passed / 13 skipped` with no `DISPLAY`, fork suite
+> `450 passed`, and the nested-`Xwayland` control flipped `0x200000` (frame) to `0x200001`
+> (client), `is_active` False to True, `activate` `False in 0.51s` to `True in 0.00s`.
+> P2-15 and P2-16 are one push each: `linux-port` is now `12e297c` on the remote, the lock
+> pins it, and the pin is fetchable with no credentials. **P2-17's recommended option (a)
+> is disproven** — `test.yml` and `build.yml`'s first job both run `tests\*.py`, and seven
+> of those tests load `ok_templates/*.png`, so dropping `submodules: true` trades a
+> checkout failure for a test failure. Only a repin fixes those workflows, and that is the
+> templates owner's call; nothing was changed. See
+> **[Sixth pass](#sixth-pass--the-fifth-passs-four-closed-2026-09-02)**.
 >
 > | | Outcome |
 > |---|---|
@@ -41,6 +68,10 @@
 > | P2-10 | fixed — `WM_NAME` decodes as Latin-1, `_NET_WM_NAME` stays UTF-8 |
 > | P2-11 | fixed — measured on a nested `Xwayland :9` under a purpose-written reparenting WM (10 clients): `find_hwnd` 3.17ms non-reparenting, 5.28ms reparenting, **3.93ms** after the fix, and 10 pure-noise `no _NET_WM_PID` reject lines gone. `list_clients` drops a frame whose child it already has, and only that shape, so P2-7's override-redirect window survives |
 > | P2-12 | fixed — an unresolvable pid reports once instead of twice, and a title-only miss says which title did not match instead of ending on a dangling `: ` |
+> | P2-14 | fixed — `get_focus_toplevel` resolves focus through ICCCM `WM_STATE` (`_client_window`), with the root's child kept as the no-WM fallback and one level of descent for a frame-focusing WM. Live control on a nested `Xwayland :9`: frame `0x200000` -> client `0x200001`, `is_active` False -> True, `activate` `False in 0.51s` -> `True in 0.00s`. ok-script-linux `f41745b`, five new unit tests |
+> | P2-15 | fixed — `linux-port` pushed; `origin/linux-port` is `12e297c` and the lock pins it. Confirmed fetchable with no credentials (`GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper= ls-remote`), which is how pip clones it |
+> | P2-16 | fixed — ok-ww `master` pushed with the repin, so a CI run finally covers this pair. Run recorded in the sixth pass below |
+> | P2-17 | **open, inherited, and not ours to close** — the fifth pass's option (a) is disproven: both workflows run `tests\*.py`, and seven of those tests read `ok_templates/*.png`, so dropping `submodules` only moves the failure. Repinning the submodule is the templates owner's call; recorded, not changed |
 >
 > Two things the fixes cost, both measured and both accepted: `list_clients` went 0.05ms ->
 > 1.8ms and `find_hwnd` 0.68ms -> 2.45ms per call (~1.2% of the 0.2s poll), because the
@@ -972,7 +1003,8 @@ poll the geometry itself — `resize_window` owns the settle loop and would then
    `Xwayland :9` plus a ~50-line reparenting WM reproduces the shape with no root and no
    package. It resolved to outcome 2, not documentation.
 
-Phase 2 has no open findings. Phase 3 was never blocked by either.
+Phase 2 has no open findings *from the first four passes*, and Phase 3 was never blocked by
+any of them. (The fifth pass reopened it: P2-14 through P2-17.)
 
 ## Second-pass verification state
 
@@ -1068,7 +1100,8 @@ destructive act.
 Both remaining findings are fixed, on ok-script-linux branch `linux-port-p2-11-12`:
 **P2-12 `c23646d`**, **P2-11 `4ca767e`**. State going in: ok-script-linux `8cda739`, ok-ww
 `ca80c6c`, same venv (`/home/max/vsCODE/okport-venv`), same KWin/Xwayland desktop, no game
-running. **Phase 2 now has no open findings.**
+running. **Phase 2 had no open findings at this point** — the fifth pass below reopened it
+with P2-14 through P2-17.
 
 ## P2-12 — applied exactly as the third pass specified
 
@@ -1199,3 +1232,606 @@ DISPLAY=:9 $V/bin/python measure.py 'REPARENT 10'
 (the surplus is the frames), times `list_clients` and `find_hwnd` over 50 calls, and
 captures P2-6's message with `window_x11._last_no_match_log = 0` and `logger.info`
 patched. Kill the three and the nested server when done — nothing touches `:0`.
+
+---
+
+# Fifth pass — Phase 0-2 re-verification (2026-09-02)
+
+An independent check of everything this file marks fixed, plus a fresh look at the Phase 2
+code for defects four passes did not ask about. State reviewed: ok-script-linux `693a496`
+(branch `linux-port`), ok-ww `ec496b0` (`master`), same venv
+(`/home/max/vsCODE/okport-venv`), same KWin/Xwayland desktop, two monitors, no game running.
+
+**Result: every code fix this file claims is genuinely in the tree, and every count
+reproduces exactly.** Nothing is marked fixed that is not. But **four findings are open
+again**, and none of them is a regression from the thirteen:
+
+* **P2-14** — a Phase 2 correctness defect the four passes missed: under a *reparenting*
+  WM, `x11.is_active()` is False for the window that holds the input focus. Reproduced,
+  patched, measured and reverted; the patch is below, drop-in.
+* **P2-15** — `requirements-linux.txt` pins a fork commit that **exists only on this
+  machine**. `origin/linux-port` is still `8cda739`; `693a496` was never pushed, so the
+  Linux CI job cannot install and no published tree contains the fourth pass's fixes.
+* **P2-16** — ok-ww `master` is one commit ahead of `origin/master`. The repin commit
+  `ec496b0` has never run CI; the last green run is `ca80c6c`, which pinned `8cda739`.
+* **P2-17** — `test.yml` and `build.yml` still carry the `submodules: true` / `lfs: true`
+  that P2-9a removed from `linux.yml`, against the same unreachable submodule commit.
+
+P2-15 and P2-16 are the same lesson P2-9a recorded, one level up: *a fix that is not
+published is not a fix, and a green run on an older pair proves nothing about this one.*
+
+## What reproduces
+
+Every check in the fourth pass's verification table was re-executed:
+
+| Check | Re-measured at `693a496` |
+|---|---|
+| `pytest tests` (fork) | **445 passed / 6 failed / 1 skipped / 10 subtests** — the six are §9b's Windows-only set (`test_device_manager` ×2, `test_process`, `test_task_ui`, `test_web_server` ×2) |
+| `pytest tests/test_x11_window.py` | **69 passed** |
+| same, `env -u DISPLAY QT_QPA_PLATFORM=offscreen` | **56 passed / 13 skipped** |
+| `tools/scan_module_level_win32.py --check` | exit 0 |
+| `tools/check_linux_imports.py` | exit 0, **70/70** resolved |
+| `tools/check_linux_startup.py`, cold (`rm -f configs/devices.json`) | `first do_start only set the preferred device; re-entering as the app does` → `do_start selected BitBlt_True + PostMessageInteraction` → `PASS`, exit 0 |
+| Lock pin vs fork HEAD | `requirements-linux.txt:35` = `@693a4961…` = `git rev-parse linux-port`. **Agree locally, and that is the problem — see P2-15** |
+| `LINUX.md` counts | `LINUX.md:124` says 69 tests, `:227-228` say 445 and `56 passed, 13 skipped`. Correct |
+
+And each fix was confirmed *in the code*, not from the tables:
+
+| Finding | Where it is at `693a496` |
+|---|---|
+| P2-1 | `window_x11.py` `resize_window` subtracts `get_frame_extents`, settles on `client + extents == requested`, centres the outer rect with the win_gravity comment |
+| P2-2 | `x11_window.py` `_pactl_env()` → `{**os.environ, 'LC_ALL': 'C', 'LANGUAGE': ''}`, passed as `env=`; `set_mute_state` skips a stream already at the target |
+| P2-3 | `x11.py` `activate(wid, timeout=0.5)` polls `is_active` and returns it |
+| P2-4 / P2-5 | `TestUpstreamDrift._win32_bound_methods` taint analysis + `_self_attributes` recursion; `test_the_method_gate_sees_upstream_growing_a_win32_method` simulates the drift |
+| P2-6 / P2-12 | `find_hwnd`'s `rejects` list, `_NO_MATCH_LOG_INTERVAL = 30`, the `exe_names`-guarded `continue`, the title reject line, and `('; '.join(rejects) or 'no window passed the filters')` |
+| P2-7 / P2-11 | `list_clients` unions three sources; source 3 calls `_frames_a_known_client`, whose predicate is `any(c.id in seen for c in child.query_tree().children)` |
+| P2-9 / P2-9a / P2-9b | `.github/workflows/linux.yml` (no `submodules`, no `lfs`, reason in a comment); `tools/check_linux_startup.py` drives both `do_start` passes |
+| P2-10 | `get_name` decodes `WM_NAME` as `latin-1` |
+| P2-13 | `resize` calls the reply-bearing `win.get_attributes()` before `configure` |
+
+## P2-14 — `is_active()` is False for a focused window under a reparenting WM [correctness] — **FIXED**
+
+`ok/compat/x11.py:408` `get_focus_toplevel()`, the fallback `is_active()` uses when the WM
+publishes no `_NET_ACTIVE_WINDOW`. Its docstring states the intent and then does the
+opposite of it:
+
+```python
+    """``XGetInputFocus`` walked up to the toplevel, for WMs that do not set EWMH focus.
+
+    A reparenting WM hands focus to a frame or an input-only child, so the raw id rarely
+    equals the client window; walking to the child of the root is what makes it comparable.
+    """
+```
+
+Under a reparenting WM the root's child **is the frame**, not the client — the same fact
+P2-11 was fixed for, one function away. So the walk climbs *past* the client and returns
+the frame, and `is_active(client)` compares two different windows.
+
+**Reproduced** on a nested `Xwayland :9` (no root, no package — the P2-11 harness), with a
+client carrying `WM_STATE` reparented into an override-redirect frame and
+`XSetInputFocus` pointed at the client:
+
+```
+raw XGetInputFocus       : 0x200001
+client                   : 0x200001
+frame  (child of root)   : 0x200000
+x11.get_active_window()  : 0x0          # no WM, so the EWMH short-circuit does not fire
+x11.get_focus_toplevel() : 0x200000     # the FRAME
+x11.is_active(client)    : False        # the client literally holds the input focus
+x11.is_active(frame)     : True
+```
+
+and through the two callers that matter:
+
+```
+x11.activate(focused client)             -> False in 0.51s   (focus was already granted)
+window_x11.is_foreground_window(client)  -> False
+```
+
+**Reachability and impact.** The EWMH path (`get_active_window()`) short-circuits on KWin,
+Mutter and every WM that publishes `_NET_ACTIVE_WINDOW`, so this is invisible on the
+machine every measurement in this file was taken on. It bites on a reparenting WM that
+does *not* publish it (twm, mwm, ctwm, and any WM during a restart), where every
+`_NET_ACTIVE_WINDOW`-less poll takes the fallback. Then, all of these invert:
+
+* `X11Window.visible` (`x11_window.py:399` `visible = self.is_foreground()`) is False for
+  the whole of foreground play. `src/task/MouseResetTask.py:39` gates on
+  `not self.hwnd.visible`, so it pins the physical cursor **while the user is playing**.
+  That is exactly the [V15] inversion `PORT.md` warns about, arriving through the other door.
+* `clickable()` on `PynputInteraction` (`pynput.py:41`), `PyDirectInteraction`
+  (`pydirect.py:30`) and `ForegroundPostMessageInteraction`
+  (`foreground_post_message.py:20`) is False forever — Phase 4's foreground fallback
+  (§4/4d) never becomes usable.
+* `bring_to_front()` reports a refusal for focus that *was* granted, after paying
+  `activate`'s full 0.5s timeout per candidate. P2-3 made that return value honest; this
+  makes it lie again in the one case P2-3 could not measure.
+* `bitblt.py:116` and `base.py:84` (`clickable`) read the same flag.
+* With `Mute Game while in Background` on (default False, `GlobalConfig.py:53`), the game
+  is muted for the whole session while it is in the foreground.
+
+### The patch — applied, measured and reverted before being written down
+
+**File:** `/home/max/vsCODE/ok-script-linux/ok/compat/x11.py`. Replace the whole of
+`get_focus_toplevel` (**lines 408-434** at `693a496`, from `def get_focus_toplevel():` down
+to and including `return _call(run, 0, 'focus_toplevel') or 0`) with the two functions
+below. `_prop` (`x11.py:148`) and `_window` (`x11.py:144`) are already defined above this
+point; nothing else in the module changes, and `is_active` is left exactly as it is.
+
+```python
+def _client_window(d, wid, root_id):
+    """The *client* window at or above ``wid``, or the root's child, or 0. Never raises.
+
+    ICCCM's answer to "which client does this window belong to" is ``WM_STATE``: the WM
+    sets it on the client window and on nothing else, which is what ``XmuClientWindow``
+    looks for. Focus almost never lands on the client itself -- a toolkit gives it to an
+    input child, and a *reparenting* WM puts the client inside a frame -- so the search
+    walks up from ``wid`` and returns the first window carrying it.
+
+    Walking all the way to the root's child instead returned the **frame** under a
+    reparenting WM, so ``is_active()`` was False for a window that held the input focus
+    [P2-14]. One level of descent covers the other half of that shape, a WM that focuses
+    the frame rather than the client.
+
+    The root-child fallback is the right answer when nothing in the branch carries
+    ``WM_STATE`` at all: a bare X server with no window manager, which is also CI.
+    """
+    root_child = 0
+    for _ in range(16):
+        if not wid or wid == root_id:
+            break
+        try:
+            if _prop(d, wid, 'WM_STATE') is not None:
+                return int(wid)
+            tree = _window(d, wid).query_tree()
+        except Exception:
+            return 0
+        if tree.parent is None or tree.parent == 0:
+            break
+        parent_id = tree.parent if isinstance(tree.parent, int) else tree.parent.id
+        if parent_id == root_id:
+            root_child = int(wid)
+            break
+        wid = parent_id
+    if root_child:
+        try:
+            for child in _window(d, root_child).query_tree().children:
+                if _prop(d, child.id, 'WM_STATE') is not None:
+                    return int(child.id)
+        except Exception:
+            pass
+    return root_child
+
+
+def get_focus_toplevel():
+    """``XGetInputFocus`` resolved to the client window, for WMs that set no EWMH focus."""
+
+    def run(d):
+        import Xlib.X
+        focus = d.get_input_focus().focus
+        if focus in (Xlib.X.PointerRoot, Xlib.X.NONE, 0) or isinstance(focus, int):
+            return 0
+        return _client_window(d, focus.id, d.screen().root.id)
+
+    return _call(run, 0, 'focus_toplevel') or 0
+```
+
+Three things about it that are deliberate, so nobody "simplifies" them back out:
+
+1. **`WM_STATE` first, root-child second — not either alone.** `WM_STATE`-only would
+   return 0 on a bare X server with no WM (CI under Xvfb, and this file's own live tests),
+   where nothing carries the property; root-child-only is the bug.
+2. **The one level of descent is not decoration.** It covers a WM that focuses the *frame*
+   rather than the client, which is a real ICCCM-legal shape and the second half of the
+   reproduction below. It runs only when the whole up-walk found no `WM_STATE`, so on the
+   EWMH path it never runs at all.
+3. **It takes `d` and is module-level**, rather than staying nested inside `run`, purely so
+   the tests below can drive it against a fake display — the same reason
+   `_frames_a_known_client` is shaped that way.
+
+### Tests to add
+
+`tests/test_x11_window.py`. Two edits:
+
+* add `import types` to the import block (**after `import time`, line 25** at `693a496`);
+* insert the class below immediately **before `@skip_on_windows` / `class TestFrameSkip`
+  (lines 325-326)**, i.e. after `TestFindHwnd`, keeping the two blank lines the file uses
+  between top-level classes. The class needs the `@skip_on_windows` decorator of its own.
+
+```python
+@skip_on_windows
+class TestFocusClientWindow(unittest.TestCase):
+    """[P2-14] `is_active` must see the client, not the reparenting WM's frame.
+
+    Measured on a nested `Xwayland :9` with the client reparented into an
+    override-redirect frame and the input focus set on the client: `get_focus_toplevel`
+    returned the frame, so `is_active(client)` was False while `XGetInputFocus` named the
+    client, `is_foreground_window` was False for a focused game, and `x11.activate` spent
+    its whole 0.5s timeout to report a refusal of focus it had been granted. Unit-tested
+    rather than driven live because the fallback only runs on a WM that publishes no
+    `_NET_ACTIVE_WINDOW`, and this desktop (KWin) and CI (Xvfb, no WM) are neither.
+    """
+
+    class _Window:
+        def __init__(self, wid, parent=None, wm_state=False, children=(), raises=False):
+            self.id = wid
+            self.parent = parent
+            self.wm_state = wm_state
+            self.children = list(children)
+            self.raises = raises
+
+    class _Display:
+        """The three calls `_client_window` makes: get_atom, create_resource_object, query_tree."""
+
+        def __init__(self, windows):
+            self.windows = {w.id: w for w in windows}
+
+        def get_atom(self, name):
+            return 39 if name == 'WM_STATE' else 1
+
+        def create_resource_object(self, kind, wid):
+            # The root and anything outside the fixture behave as a bare window.
+            window = self.windows.get(wid) or TestFocusClientWindow._Window(wid)
+            display = self
+
+            class _Resource:
+                id = wid
+
+                def get_full_property(self, atom, kind_):
+                    if window.raises:
+                        raise RuntimeError('BadWindow: it went away mid-walk')
+                    # SimpleNamespace, not Mock: `parent` is a reserved Mock kwarg and a
+                    # `Mock(parent=...)` silently hands back the wrong object below.
+                    return types.SimpleNamespace(value=[1, 0]) if window.wm_state else None
+
+                def query_tree(self):
+                    if window.raises:
+                        raise RuntimeError('BadWindow: it went away mid-walk')
+                    return types.SimpleNamespace(
+                        parent=None if window.parent is None else display.create_resource_object('window', window.parent),
+                        children=[display.create_resource_object('window', c) for c in window.children])
+
+            return _Resource()
+
+    ROOT = 0x100
+
+    def test_focus_on_an_input_child_resolves_to_the_client(self):
+        from ok.compat import x11
+        display = self._Display([
+            self._Window(0x1400002, parent=0x1400001),
+            self._Window(0x1400001, parent=self.ROOT, wm_state=True, children=[0x1400002]),
+        ])
+
+        self.assertEqual(0x1400001, x11._client_window(display, 0x1400002, self.ROOT))
+
+    def test_a_reparented_client_is_not_reported_as_its_frame(self):
+        """The regression: the frame is the root's child, so the old walk returned it."""
+        from ok.compat import x11
+        display = self._Display([
+            self._Window(0x1400001, parent=0x2000001, wm_state=True),
+            self._Window(0x2000001, parent=self.ROOT, children=[0x1400001]),
+        ])
+
+        self.assertEqual(0x1400001, x11._client_window(display, 0x1400001, self.ROOT))
+
+    def test_a_wm_that_focuses_the_frame_still_resolves_to_the_client(self):
+        """One level of descent: the frame carries no WM_STATE, its child does."""
+        from ok.compat import x11
+        display = self._Display([
+            self._Window(0x2000001, parent=self.ROOT, children=[0x1400001]),
+            self._Window(0x1400001, parent=0x2000001, wm_state=True),
+        ])
+
+        self.assertEqual(0x1400001, x11._client_window(display, 0x2000001, self.ROOT))
+
+    def test_with_no_wm_state_anywhere_the_root_child_is_the_answer(self):
+        """A bare X server with no window manager, which is also what CI runs under."""
+        from ok.compat import x11
+        display = self._Display([
+            self._Window(0x1400002, parent=0x1400001),
+            self._Window(0x1400001, parent=self.ROOT, children=[0x1400002]),
+        ])
+
+        self.assertEqual(0x1400001, x11._client_window(display, 0x1400002, self.ROOT))
+
+    def test_a_window_that_dies_mid_walk_is_zero_not_an_exception(self):
+        from ok.compat import x11
+        display = self._Display([self._Window(0x1400001, parent=self.ROOT, raises=True)])
+
+        self.assertEqual(0, x11._client_window(display, 0x1400001, self.ROOT))
+```
+
+**The `types.SimpleNamespace` comment is load-bearing, not style.** The first draft of this
+fixture used `unittest.mock.Mock(parent=…)`; `parent` is a reserved `Mock` constructor
+keyword, so `tree.parent` came back as mock plumbing and three of the five tests failed
+with `AttributeError: '_Resource' object has no attribute '_mock_new_name'` surfacing as
+`20971521 != 0`. Do not swap it back.
+
+### Expected results, all observed
+
+The patch and the tests above were applied to a working copy of `693a496`, run, and then
+reverted — the fork tree is clean at `693a496`.
+
+```sh
+V=/home/max/vsCODE/okport-venv
+cd /home/max/vsCODE/ok-script-linux
+$V/bin/python -m pytest tests/test_x11_window.py            # 69 today -> 74 passed
+env -u DISPLAY QT_QPA_PLATFORM=offscreen $V/bin/python -m pytest tests/test_x11_window.py
+                                                            # 56/13 today -> 61 passed, 13 skipped
+$V/bin/python -m pytest tests                               # 445 -> 450 passed, 6 failed, 1 skipped
+```
+
+The six failures stay §9b's Windows-only set. The live X11 tests, including P2-7's
+override-redirect test and the two `resize_window` ones, are unaffected.
+
+**The negative control is the nested server, not the unit tests** (they cannot run at all
+without `_client_window`). Same harness, same shape, before and after the patch:
+
+```
+before: x11.get_focus_toplevel() -> 0x200000 (frame)   is_active(client) False   activate() False in 0.51s
+after : x11.get_focus_toplevel() -> 0x200001 (client)  is_active(client) True    activate() True  in 0.00s
+```
+
+### Reproducing it
+
+```sh
+Xwayland :9 -geometry 1000x700 &        # nested, rootful, inside the Wayland session
+V=/home/max/vsCODE/okport-venv
+DISPLAY=:9 $V/bin/python - <<'EOF'
+import sys, time
+from Xlib import X, display
+sys.path.insert(0, '/home/max/vsCODE/ok-script-linux')
+from ok.compat import x11
+
+d = display.Display(); root = d.screen().root
+def mk(parent, override=0):
+    return parent.create_window(0, 0, 300, 200, 0, X.CopyFromParent, X.InputOutput,
+                                X.CopyFromParent, background_pixel=d.screen().white_pixel,
+                                override_redirect=override)
+wm_state = d.get_atom('WM_STATE')
+frame = mk(root, 1); client = mk(root)
+client.change_property(wm_state, wm_state, 32, [1, 0])   # what a WM puts on the client
+client.reparent(frame, 0, 0); frame.map(); client.map(); d.sync(); time.sleep(0.3)
+d.set_input_focus(client, X.RevertToParent, X.CurrentTime); d.sync(); time.sleep(0.3)
+
+print('client', hex(client.id), 'frame', hex(frame.id))
+print('get_focus_toplevel', hex(x11.get_focus_toplevel()))
+print('is_active(client) ', x11.is_active(client.id))
+t = time.time(); ok = x11.activate(client.id)
+print(f'activate(client)   {ok} in {time.time()-t:.2f}s')
+# and the frame-focused half, which the descent covers
+d.set_input_focus(frame, X.RevertToParent, X.CurrentTime); d.sync(); time.sleep(0.3)
+print('frame focused -> get_focus_toplevel', hex(x11.get_focus_toplevel()))
+EOF
+pkill -f 'Xwayland :9'
+```
+
+Nothing here touches `:0`. `Xwayland` is already installed (the session runs it); Xephyr,
+Xvfb and every standalone WM still are not, and are still not needed.
+
+## P2-15 — the Linux lock pins a fork commit that exists on no remote [automation, fix first] — **FIXED**
+
+`requirements-linux.txt:35` pins
+`git+https://github.com/RarestStatue/ok-script-linux@693a496177b4f1bb298391cb14792e0dedebb53e`.
+That commit is local-only:
+
+```
+$ git -C ../ok-script-linux ls-remote origin
+8cda73980fec17957e3750290f9de58bddaf9388	HEAD
+8cda73980fec17957e3750290f9de58bddaf9388	refs/heads/linux-port
+```
+
+`origin/linux-port` is still the *third* pass's commit. `693a496`, `4ca767e` and `c23646d`
+— the entire fourth pass, P2-11 and P2-12 — are on this machine only, as is the branch
+`linux-port-p2-11-12` they were merged from. Verified end to end, which is also the exact
+error the Install step will print:
+
+```
+$ git fetch --depth 1 origin 693a496177b4f1bb298391cb14792e0dedebb53e
+fatal: remote error: upload-pack: not our ref 693a496177b4f1bb298391cb14792e0dedebb53e
+```
+
+So the moment `ec496b0` is pushed (P2-16), the Linux startup gate fails at `Install`. And
+the fourth pass's own closing paragraph — *"a lock left on the old commit means CI keeps
+testing the old tree"* — is half of the lesson: a lock moved to a commit nobody can fetch
+does not test anything at all.
+
+**Fix, in this order:**
+
+1. `git -C /home/max/vsCODE/ok-script-linux push origin linux-port` — `693a496` is already
+   a merge on `linux-port`, so this is a fast-forward of the remote branch; nothing needs
+   rebasing. Push the topic branch too if it is worth keeping:
+   `git push origin linux-port-p2-11-12`.
+2. Confirm the pin is now fetchable *anonymously*, the way CI does it — pip's clone carries
+   no credentials, which is what cost run `33587086281` in P2-9a:
+   ```sh
+   GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper= ls-remote \
+       https://github.com/RarestStatue/ok-script-linux.git | grep 693a4961
+   ```
+3. Only then push ok-ww (P2-16) and read the run.
+
+**Do not "fix" this by repinning the lock back to `8cda739`.** That drops P2-11 and P2-12
+out of the tested tree.
+
+## P2-16 — ok-ww `master` is one commit ahead of its remote, so no CI run covers this pair [automation] — **FIXED**
+
+```
+$ git status -sb
+## master...origin/master [ahead 1]
+$ git log --oneline -1 origin/master
+ca80c6c docs(port): record the green Linux gate run
+$ gh run view 33587618601 --json headSha,conclusion
+{"conclusion":"success","headSha":"ca80c6c2af5a6c2a86d2cc1dd1688c3549750f9f"}
+```
+
+`ec496b0` — the commit that repins the lock to `693a496` and records the fourth pass — is
+unpushed. Both green runs in `gh run list` are `ca80c6c` and its predecessor, i.e. the
+`8cda739` pair. Everything the fourth pass concluded about CI is therefore a statement
+about the *third* pass's trees.
+
+**Fix:** after P2-15's push and check, `git push origin master`, then **read the run**, not
+the YAML — P2-9a's rule. A green run on `ec496b0` is the first CI evidence for `693a496`.
+If the Install step fails on the pin, P2-15 was not done.
+
+## P2-17 — `test.yml` and `build.yml` keep the submodule checkout P2-9a had to remove [automation, inherited] — **OPEN, and option (a) is disproven**
+
+P2-9a diagnosed `actions/checkout` failing with
+`upload-pack: not our ref 515962ce…` because `ok_templates` is pinned to a commit that is
+on no ref of the labeling repo, and dropped `submodules`/`lfs` from `linux.yml`. The same
+two lines are still in every other workflow: `test.yml:35-36` and `build.yml:43-44`,
+`:127-128`, `:195-196`. The submodule commit is still unreachable — re-checked today:
+
+```
+$ git ls-remote https://github.com/ok-oldking/ok-wuthering-waves-coco-labeling.git | grep -c 515962ce
+0
+```
+
+Invisible so far only because no Windows workflow has ever been triggered on this fork.
+The first push that touches `test.yml`'s paths burns a job at checkout.
+
+**Fix — pick one, and record which:**
+
+* **(a) Match `linux.yml`.** Drop `submodules: true` / `lfs: true` from `test.yml` and from
+  all three `build.yml` jobs, with the same comment naming the unreachable commit. Cheap
+  and consistent, but `build.yml` packages the app: check whether the build steps read
+  `ok_templates/` before dropping it there — the startup gate does not, but a *build* may.
+* **(b) Repin the submodule** to a commit that exists (`d1b4ed8c…` is the labeling repo's
+  current `master`) with `git -C ok_templates fetch && git submodule set-branch`… and
+  commit the new gitlink. This changes what the app ships, so it is not a CI-only decision
+  — it belongs to whoever owns the templates, and `ok_templates` is a *submodule of an
+  upstream project*, not this port's to bump on a whim.
+
+(a) for `test.yml` now, and (b) escalated rather than guessed, is the honest split. Either
+way this is not Phase 2's bug — it is inherited, and it is recorded here because the next
+person to push will hit it and waste an hour on the wrong hypothesis.
+
+> **Sixth pass: (a) is wrong, for `test.yml` as much as for `build.yml`, and the "check
+> whether the build steps read `ok_templates/`" caveat above is the thing that catches it.**
+> Both `test.yml` (`:83`) and `build.yml`'s first job (`:95`) run every file in `tests\`:
+>
+> ```powershell
+> Get-ChildItem -Path ".\tests\*.py" | ForEach-Object { python -m unittest $_.FullName ... }
+> ```
+>
+> and seven of those files load images out of the submodule — `tests/TestChar.py:2069`,
+> `TestCombatCheck.py:33,47`, `TestFeatureSet.py:13`, `TestForte.py:45`, `TestKey.py:48`,
+> `TestSkipDialogWideMode.py:17,18,31`, `TestWorld.py:23`. Dropping `submodules: true`
+> therefore does not make those jobs pass; it moves the failure from `actions/checkout` to
+> `cv2.imread` returning `None`. That is not the trade `linux.yml` made — the startup gate
+> genuinely does not read `ok_templates/`, which is why (a) was right *there* and is wrong
+> here.
+>
+> So the only fix for these two workflows is (b), and (b) is a decision about what the app
+> ships, taken against a submodule this port does not own. Re-checked today: the gitlink is
+> still `515962ce`, the labeling repo's `master` is `d1b4ed8c1ca9e145c514853c14030a7358afe12c`,
+> and `git ls-remote | grep -c 515962ce` is still `0`. **Nothing was changed.** P2-17 stays
+> open, now with the wrong answer ruled out rather than merely untried, and it belongs to
+> whoever owns `ok_templates`.
+
+## Suggested order (fifth pass)
+
+1. **P2-15** — one `git push`. Until it happens, every other claim about CI is unfalsifiable
+   and the fourth pass's fixes exist on exactly one disk.
+2. **P2-16** — push ok-ww, read the run. Together with 1, this is the first CI evidence for
+   the `ec496b0` ⇄ `693a496` pair.
+3. **P2-14** — the only correctness finding. Drop-in patch and tests above; ship them in one
+   commit on `linux-port`, then repin `requirements-linux.txt:35` to the new fork commit and
+   push both (that is 1 and 2 again — do them in that order and it is one cycle, not two).
+4. **P2-17** — cheap for `test.yml`, escalate for `build.yml`.
+
+None of the four blocks Phase 3.
+
+## Phase 3 readiness
+
+Nothing in Phase 2 is left open that Phase 3 depends on, and the two Phase 2 items that
+were always going to outlive it are unchanged and still correctly recorded:
+
+* **[GATE-1b]** — the pressure-vessel PID-namespace question. `find_hwnd`'s whole identity
+  chain is `_NET_WM_PID` → `psutil.Process(pid)` → command line, and P2-6/P2-12's rejection
+  message now says precisely which link broke. Still untested against a Steam-launched game.
+* **P2-7 against the real game** — `list_clients` enumerates override-redirect toplevels and
+  has a live test that builds one by hand, but no one has pointed it at a
+  fullscreen-exclusive Proton window. Same session as [GATE-1b] / [GATE-2].
+
+Phase 3 (`X11CaptureMethod`) needs neither. Two things it *will* touch that this pass
+confirms are ready: `tools/check_linux_startup.py` asserts only that *a* capture method is
+selected, so it starts naming `X11` without a change (its own docstring says so); and
+`x11.is_minimized()` is the predicate `do_get_frame` should raise `CaptureException` on
+per `PORT.md` §4 Phase 3 / [V7] — it is already the three-way check (`_NET_WM_STATE_HIDDEN`,
+`WM_STATE == IconicState`, not viewable) and is live-tested.
+
+---
+
+# Sixth pass — the fifth pass's four, closed (2026-09-02)
+
+The fifth pass's suggested order, run. Three of the four are closed; the fourth is closed
+as a question rather than a change, because measuring it disproved the answer that was
+recommended. State at the end: ok-script-linux `12e297c` (branch `linux-port`, **pushed**),
+ok-ww `master` with the lock repinned to it, same venv, same KWin/Xwayland desktop.
+
+| | What was done |
+|---|---|
+| **P2-14** | The patch and the five tests below applied verbatim. ok-script-linux `f41745b` |
+| **P2-15** | `git push origin linux-port` (`8cda739..f41745b`, fast-forward) and `linux-port-p2-11-12`; pin re-verified anonymously |
+| **P2-16** | `requirements-linux.txt:35` repinned to `12e297c` and ok-ww `master` pushed |
+| **P2-17** | Measured, **not changed** — option (a) is disproven. See the block in P2-17 above |
+
+## P2-14 — applied exactly as the fifth pass specified
+
+`ok/compat/x11.py`: `get_focus_toplevel`'s body became the two functions written above,
+`_client_window` and a three-line `get_focus_toplevel`. `is_active` was not touched.
+`tests/test_x11_window.py`: `import types` after `import time`, and `TestFocusClientWindow`
+inserted between `TestFindHwnd` and `TestFrameSkip`.
+
+Every number the fifth pass predicted came out:
+
+| Check | Predicted | Measured |
+|---|---|---|
+| `pytest tests/test_x11_window.py` | 69 -> 74 | **74 passed** |
+| same, no `DISPLAY` | 56/13 -> 61/13 | **61 passed, 13 skipped** |
+| `pytest tests` (fork) | 445 -> 450 | **450 passed, 6 failed, 1 skipped, 10 subtests** — the six are §9b's Windows-only set, unchanged |
+| `tools/scan_module_level_win32.py --check` | exit 0 | exit 0 |
+| `tools/check_linux_imports.py` | exit 0 | exit 0, **70/70** resolved |
+| `tools/check_linux_startup.py`, cold | PASS | `first do_start only set the preferred device` -> `do_start selected BitBlt_True + PostMessageInteraction` -> `PASS`, exit 0 |
+
+**The live control, which is the part the unit tests cannot give.** Same nested
+`Xwayland :9` harness as the fifth pass's reproduction — a client carrying `WM_STATE`
+reparented into an override-redirect frame, `XSetInputFocus` on the client:
+
+```
+client 0x200001 frame 0x200000
+get_focus_toplevel 0x200001            # was 0x200000, the frame
+is_active(client)  True                # was False
+activate(client)   True in 0.00s       # was False in 0.51s
+frame focused -> get_focus_toplevel 0x200001   # the descent, exercised
+```
+
+The last line is the half the fifth pass added the one level of descent for: with focus on
+the *frame*, the walk finds no `WM_STATE` on the way up, falls back to the root's child,
+and descends one level into the client. Both halves of the shape now answer with the
+client.
+
+`LINUX.md` moved with the counts: `:124` says 74 tests and names the `WM_STATE` resolution,
+`:227-228` say 450 and `61 passed, 13 skipped` (ok-script-linux `12e297c`).
+
+## P2-15 / P2-16 — published, in that order
+
+```
+$ git -C ../ok-script-linux push origin linux-port
+   8cda739..f41745b  linux-port -> linux-port
+$ GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper= ls-remote \
+      https://github.com/RarestStatue/ok-script-linux.git
+12e297ce46bdda5657955555073975ccd04c7bd3	HEAD
+12e297ce46bdda5657955555073975ccd04c7bd3	refs/heads/linux-port
+4ca767e486a6e45ed1c5cc9676fd68c51174ca57	refs/heads/linux-port-p2-11-12
+```
+
+The anonymous `ls-remote` is the check that matters, not the push: pip's clone carries no
+credentials, and a pin that resolves only with the developer's own git config is the
+failure P2-9a burned run `33587086281` on. `linux-port-p2-11-12` was pushed too, so the
+fourth pass's topic branch is no longer single-disk either.
+
+`requirements-linux.txt:35` now pins `12e297c` — the `LINUX.md` commit, not `f41745b`, so
+the tested tree and the documented counts are the same tree. The fifth pass's warning
+still stands in the other direction: **do not repin backwards.** `8cda739` drops P2-11,
+P2-12 and P2-14; `693a496` is fetchable now but predates P2-14.
+
