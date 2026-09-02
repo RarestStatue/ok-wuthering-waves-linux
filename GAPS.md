@@ -544,7 +544,11 @@ records.
 > 2. `33587220652` — install passed, and the gate itself failed:
 >    `FAIL do_start() selected no capture method`. See P2-9b; the gate had never actually
 >    passed on a clean machine.
-> 3. `33587556…` — green. See the run recorded at the end of this section.
+> 3. `33587502715` — **green**, on `7bc87e5`, and it took the cold path by design:
+>    `first do_start only set the preferred device; re-entering as the app does`, then
+>    `do_start selected BitBlt_True + PostMessageInteraction`, then
+>    `PASS  startup reaches capture-method selection` — on a runner with one monitor,
+>    `(0, 0, 1280, 1024)`, under Xvfb with no window manager.
 
 ## P2-9b — the exit gate only ever passed because of leftover local state [correctness of the gate itself] — **FIXED**
 
@@ -731,5 +735,8 @@ and the lock repinned to `8cda739`.
   without.
 * `tools/scan_module_level_win32.py --check` exit 0 (27 offenders),
   `tools/check_linux_imports.py` exit 0 (70/70), the `win32con` constant gate 4 passed.
-* `tools/check_linux_startup.py` still prints `PASS  startup reaches capture-method
-  selection`.
+* `tools/check_linux_startup.py` prints `PASS  startup reaches capture-method selection`
+  both warm and cold (`rm -f configs/devices.json`) — and, for the first time, **in CI**:
+  run `33587502715` is green end to end. That run is now the load-bearing evidence for
+  Phase 1's deferred C9 criterion, which until today had only ever been demonstrated on a
+  machine that had already run the app.
