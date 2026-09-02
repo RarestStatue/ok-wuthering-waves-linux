@@ -907,6 +907,9 @@ __str__()
 
 ### Phase 3 — `X11CaptureMethod`
 
+**Implemented 2026-09-02. Read §11 alongside this section — nine of the instructions below
+were wrong, incomplete, or unnecessary when executed, and §11 records which.**
+
 New file `ok/device/capture_methods/x11_capture.py`, subclassing **`BaseWindowsCaptureMethod`** (not `BaseCaptureMethod`): `get_capture()` in `update.py` constructs it as `target_method(hwnd_window)` and then assigns `.hwnd_window` and `.exit_event`, and the base gives you that property plus `get_abs_cords()` — which `CombatCheck.py:225` and `MouseResetTask.py:40` call as `interaction.capture.get_abs_cords(...)`. Override `clickable()` to return `True` (the base returns `hwnd_window.visible`, which is a *foreground* test **[V15]** and would read False for the whole of background play).
 
 Scope note on that override: `PostMessageInteraction` — and therefore `WinePostMessageInteraction` — never calls the capture object's `clickable()`. Only `PynputInteraction`, `PyDirectInteraction` and `ForegroundPostMessageInteraction` gate on it, and they define their own `clickable()` against `hwnd_window.is_foreground()`. So the override is correct and costs nothing, but it is not what makes background play work; **[V15]**'s load-bearing consumer is `MouseResetTask`, not `clickable()`.
@@ -1248,7 +1251,7 @@ pip install -e .
 | ~~GATE-1~~ | ~~Does a second `proton run` join an existing Proton wineserver?~~ | — | **RESOLVED — passes, host-side. See [V10].** Separate `proton run` invocations share a wineserver; PostMessage crosses. Scope limit: both processes were outside the SLR container — see GATE-1b. |
 | **GATE-1b** | Does a host-side shim join the wineserver of a game Steam launched **inside** the SteamLinuxRuntime_4 container? | everything downstream | **[V19]** — untested; the toolmanifest declares `require_tool_appid 4183110`. If it fails, launch the shim through `_v2-entry-point` (§4b fallback 1) so it lands in the same container. If *that* also fails, fall back to protontricks, then to a Steam launch-option wrapper that starts the shim alongside the game. |
 | **GATE-2** | Does **Wuthering Waves** (Unreal, likely RawInput/DirectInput) respond to `PostMessage` under Wine as it does on Windows? | background input | Upstream ships `PostMessage` as WW's default on Windows, so the Win32 path is known-good there; the risk is Wine's translation. If it fails, test `ForegroundPostMessage`, then fall back to `Pynput` (§4d **[V20]**), then uinput. |
-| ~~GATE-3~~ | ~~Can X11 capture sustain the needed frame rate at 1080p?~~ | — | **RESOLVED — passes with large margin. See [V14].** `XShmGetImage` 1.24 ms + `cv2.cvtColor` 0.15 ms ≈ 700 fps at 1080p; even plain `XGetImage` gives 73 fps. Re-measure against the real game window (Vulkan/DXVK-backed surfaces may differ from a plain X client), but this is no longer a design risk. |
+| ~~GATE-3~~ | ~~Can X11 capture sustain the needed frame rate at 1080p?~~ | — | **RESOLVED, and re-measured against the real game — see §11.** Wuthering Waves under Proton at 2560x1440: `XShmGetImage` + `cv2.cvtColor` **4.48 ms/frame (223 fps)**, `XGetImage` 29.71 ms (34 fps). The DXVK-backed surface costs more than a plain X client but is nowhere near a limit. |
 | **GATE-4** | Does OpenVINO/onnxocr run acceptably on Linux? | OCR-dependent tasks | Set `use_openvino: False` to fall back to onnxruntime CPU; `use_npu: True` is Windows-NPU-oriented — expect to disable it. `use_openvino` also selects `OpenVinoYolo8Detect` vs `OnnxYolo8Detect` in `src/globals.py:21`, so flipping it changes the echo detector too — benchmark both. |
 
 **GATE-1b and GATE-2 are the two things standing between this plan and confirmed background operation, in that order.** Both are answered by one spike session — the shim plus a running game, a few hours. Do it first, before building out Phases 2–3: every remaining design choice is downstream of the answers. GATE-1b failing changes *how* the shim is launched (§4b fallback 1); GATE-2 failing switches the project to the foreground-only fallback (§4d), which is now a config entry rather than a build.
@@ -1891,6 +1894,128 @@ exit 0 (70/70), and `tools/check_linux_startup.py` prints
 (`rm -f configs/devices.json`), selecting `BitBlt_True + PostMessageInteraction`. The live
 override-redirect test (C14/P2-7) still passes on the real KWin/Xwayland desktop, which is
 the regression that mattered.
+
+---
+
+## 11. Phase 3 implementation record (2026-09-02) — what the plan got wrong
+
+Phase 3 is **done and verified, against the real game**. `X11CaptureMethod` captures
+Wuthering Waves running under Proton at 2560x1440 in 4.5 ms/frame, live, while the window
+is occluded — so ok-ww on Linux now has real frames of the game and the only missing
+backend is input (Phase 4).
+
+In the fork (`RarestStatue/ok-script-linux`, branch `linux-port`, commit `493354a`):
+
+```
+ok/compat/xshm.py                          new   the ctypes pixel path: MIT-SHM, XGetImage,
+                                                 XComposite, BGRA->BGR, an error handler
+ok/device/capture_methods/x11_capture.py   new   X11CaptureMethod + the crop rectangle
+tests/test_x11_capture.py                  new   34 tests, 10 of them against a real X server
+ok/device/capture_methods/update.py        edit  the X11 / X11_Composite selection branch
+ok/device/capture_methods/__init__.py      edit  exports X11CaptureMethod
+tests/test_x11_window.py                   edit  the no-win32 drift gate covers the two new files
+```
+
+In this repo: `config.py` offers `['X11', 'X11_Composite']` on Linux (part of §4 Phase 5b,
+pulled forward because without it the backend is unreachable), and
+`tools/check_linux_startup.py` grew the Phase 3 half of the exit gate — it now asserts that
+an X11 backend was selected and, when the game is running, that it produces a correctly
+sized non-blank BGR frame.
+
+### Measurements (this machine, KWin/Xwayland, against the running game unless noted)
+
+| | 2560x1440, the game | 1920x1080, a test window |
+|---|---|---|
+| `XShmGetImage` + `cv2.cvtColor` | **4.48 ms** (223 fps) | 2.28 ms (438 fps) |
+| `XGetImage` + `cv2.cvtColor` | 29.71 ms (34 fps) | 11.01 ms (91 fps) |
+| `XShmGetImage` via XComposite | 4.47 ms | 2.16 ms |
+
+2000 grabs per path: RSS flat, `ipcs -m` reports **0** segments throughout (the segment is
+`IPC_RMID`-ed straight after `XShmAttach`, so the kernel reclaims it even if the process is
+killed) and none left behind after `close()`.
+
+### Nine corrections to §4 Phase 3
+
+**E1. Xlib's default error handler calls `exit(1)`, and §4 never mentions it.** This is the
+difference between a port that works and one that kills the app the first time the game
+window dies mid-grab — a `BadWindow` on a routine race between the 0.2 s poll thread and
+the capture thread. `XSetErrorHandler` is installed on first load. Note it is *process*
+global rather than per-display (there is no per-display error handler in Xlib); acceptable
+here only because nothing else in the process talks to libX11 — PySide6 uses xcb and
+python-xlib speaks the protocol itself.
+
+**E2. A grab from a Pixmap comes back with the image's RGB masks zeroed.** Both `XGetImage`
+and `XShmGetImage` fill an image's `red_mask`/`green_mask`/`blue_mask` in from the *reply's*
+visual id, and a pixmap has no visual. So the composite path's first frame had
+`red_mask == 0` and the channel-order logic had nothing to work from. The window's own
+`Visual` is read (one more ctypes struct) and passed down as the fallback. §4's "do not
+colour-swap manually — you will double-swap" is right for the window path and incomplete
+for the pixmap one.
+
+**E3. The composite pixmap must be re-named on every grab, which is what makes
+`X11_Composite` cost the same as `X11`.** §4 describes `XCompositeNameWindowPixmap` as a
+one-off. A name is a handle onto the backing pixmap *as it is now*, and a client that
+presents by flipping — DXVK, for this game, through the Present extension — gets a new
+backing pixmap per frame. Measured against the game: with the name cached, six grabs 0.25 s
+apart differed by exactly **0.0** — a frozen picture that looks exactly like a working
+capture; re-named each grab, the same six differed by 28-57. Re-naming costs one XID and
+two replyless requests (3.56 -> 5.41 ms in that first measurement), which is what the direct
+path costs anyway. **If a future capture backend caches anything derived from the window's
+backing store, measure the difference between two frames before believing it.**
+
+**E4. `is_minimized()` is True for a window that no longer exists.** Its last resort is
+"not viewable", which a dead window id answers True. §4 says to raise `CaptureException`
+when the window is Iconic; done literally, a game that exited raised "the game window is
+minimized, restore it" on every poll until the window layer noticed — the one message a
+user cannot act on. The raise is gated on `x11.exists()` first.
+
+**E5. The capture rectangle comes from `client_width`/`client_height`, not
+`real_width`/`real_height`.** §4 says nothing about the crop, and the obvious move —
+copying `BitBltCaptureMethod.do_get_frame` — is wrong here. On Windows `real_*` is a
+letterboxed *child* window; on Linux it is the matched window's own size **[V18]**, so using
+it would undo the aspect-ratio crop `do_update_window_size` applies. The right sibling is
+`HwndWindow.get_capture_origin`, which crops from `client_*`; a test asserts the two agree,
+because a capture cropped from a different origin than the overlay would place every click
+correctly and match every template against the wrong pixels.
+
+**E6. `DeviceManager.available_capture_methods` needs no change.** §4 says to add the two
+names to it. It has no list to add to: for a `windows` device it returns
+`windows_capture_config['capture_method']`, i.e. ok-ww's own config, so the `config.py`
+change *is* the GUI change.
+
+**E7. The selection branch needs an availability guard and a module flag.** §4's snippet
+maps both names to `X11CaptureMethod` with nothing to tell them apart, and returns the
+backend unconditionally. Both halves matter: the flag is module state
+(`x11_capture.use_composite`), exactly as `bitblt.render_full` is, because `get_capture`
+reuses a live capture object and only ever calls `target_method(hwnd)`; and
+`x11_capture_available()` — libX11 loads and `DISPLAY` is set — keeps a machine without
+X11 from being stranded on a backend that can never produce a frame, which is the shape
+`get_win_graphics_capture` already has for WGC.
+
+**E8. GATE-3's numbers hold, and the ratio is bigger on the real target.** **[V14]** measured
+11x between the two paths at 1080p on a plain window; on the game at 2560x1440 it is 6.6x
+(4.48 vs 29.71 ms). Both are far inside what ok-ww needs. The `cv2.cvtColor` copy is still
+the right one and is now load-bearing for a second reason: the SHM segment is reused across
+grabs, so a view into it corrupts frames `TaskExecutor` still holds.
+
+**E9. Occlusion is confirmed against the game, not just inferred from [V7].** A 400x300
+override-redirect window was mapped over the game's top-left corner: the frame captured
+during that second contained **zero** pixels of the covering window's colour and kept
+changing (mean absolute difference 45.8 against the frame before it). So `X11` — the direct
+path — is the correct default under Xwayland and any compositing WM, and `X11_Composite`
+is there for a plain non-compositing X server, where the pixels really are only in the
+framebuffer.
+
+### What Phase 3 did not do
+
+* **The `damage` extension optimisation** (§4: "pure win, but not v1") is not implemented.
+  The poll loop still grabs unconditionally. At 4.5 ms/frame there is no pressure to.
+* **Fractional scaling** is still `scaling = 1.0`, inherited from Phase 2.
+* **[GATE-1b] and [GATE-2] are untouched.** Phase 3 does not need them and did not test
+  them. They remain the two gates between this port and background *play*; capture is done.
+* `PostMessageInteraction` is still what `do_start` selects for input on Linux, and it
+  cannot post into the Wine window. That is Phase 4, and it is the only thing left between
+  here and a working bot.
 
 ---
 

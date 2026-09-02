@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from pathlib import Path
 
 from ok import Box, ConfigOption, Icon
@@ -195,7 +196,14 @@ config = {
         'exe': 'Client-Win64-Shipping.exe',
         'hwnd_class': 'UnrealWindow',
         'interaction': 'PostMessage',
-        'capture_method': ['WGC', 'BitBlt_RenderFull'],  # Windows版本支持的话, 优先使用WGC, 否则使用BitBlt_Full
+        # Windows版本支持的话, 优先使用WGC, 否则使用BitBlt_Full.
+        # On Linux neither exists: WGC is a WinRT API and BitBlt needs a Win32 window DC, so
+        # the list is the X11 backends instead (PORT.md Phase 3). `X11` grabs the game's own
+        # window and works while it is behind others; `X11_Composite` is the same grab from
+        # an XComposite offscreen pixmap, for a plain non-compositing X server where an
+        # occluded window's pixels are genuinely not in the framebuffer.
+        'capture_method': (['X11', 'X11_Composite'] if sys.platform == 'linux'
+                           else ['WGC', 'BitBlt_RenderFull']),
         'check_hdr': False,
         'force_no_hdr': False,
         'check_night_light': True,

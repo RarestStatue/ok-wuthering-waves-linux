@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 2 exit gate: how far does ok-ww's real config get on Linux?
+"""Phase 2 and Phase 3 exit gate: how far does ok-ww's real config get on Linux?
 
 The Phase 1 gate (`check_linux_imports.py`, in the ok-script fork) resolves every lazily
 mapped symbol, which proves the tree *imports*. It cannot prove the app *starts*: the
@@ -23,12 +23,13 @@ What it asserts, in startup order:
 3. `update_pc_device()` -- i.e. `find_hwnd` -- produces a PC device entry. Without it the
    `windows` branch of `do_start` is never taken and no capture ever starts.
 4. `do_start()` runs to completion and selects a capture method and an interaction.
-
-Step 4 does *not* assert *which* capture method. Until ok-ww's own `config.py` gets its
-Linux overrides (PORT.md Phase 5b) the list is still `['WGC', 'BitBlt_RenderFull']`, so
-what gets selected here is the Windows BitBlt backend -- importable on Linux, harmless,
-and never able to produce a frame. Phase 3 adds `X11`/`X11_Composite`; this gate then
-starts naming them, without needing a change here.
+5. The capture method it selected is an X11 one -- `config.py` now offers
+   `['X11', 'X11_Composite']` on Linux, and selecting anything else means the branch in
+   `update_capture_method` did not fire.
+6. If the game is running, that capture method produces a frame of the right size. This is
+   the Phase 3 exit criterion, and it is the only step that needs the game: with no game
+   window there is nothing to capture and the step reports itself skipped, which is what
+   CI sees.
 """
 
 import os
@@ -111,10 +112,36 @@ def main():
         fail('do_start() selected no capture method')
     if device_manager.interaction is None:
         fail('do_start() selected no interaction backend')
-    print(f'OK    do_start selected {device_manager.capture_method.get_name()} + '
+    capture = device_manager.capture_method
+    print(f'OK    do_start selected {capture.get_name()} + '
           f'{type(device_manager.interaction).__name__}')
 
-    print('PASS  startup reaches capture-method selection')
+    if capture.get_name() not in ('X11', 'X11_Composite'):
+        fail(f'do_start selected {capture.get_name()}, not an X11 capture method; '
+             f'config.py offers {config["windows"]["capture_method"]}')
+    print(f'OK    capture backend is {type(capture).__name__}')
+
+    if not running:
+        print('SKIP  no game window, so there is nothing to capture; '
+              'startup itself is proven above')
+        print('PASS  startup reaches capture-method selection')
+        return 0
+
+    hwnd_window.do_update_window_size()
+    frame = capture.get_frame()
+    if frame is None:
+        fail(f'{capture.get_name()} produced no frame for hwnd {hwnd_window.hwnd}')
+    if frame.ndim != 3 or frame.shape[2] != 3 or str(frame.dtype) != 'uint8':
+        fail(f'frame is not an (h, w, 3) uint8 BGR array: {frame.shape} {frame.dtype}')
+    if (frame.shape[1], frame.shape[0]) != (hwnd_window.width, hwnd_window.height):
+        fail(f'frame is {frame.shape[1]}x{frame.shape[0]}, the window is '
+             f'{hwnd_window.width}x{hwnd_window.height}')
+    if frame.std() == 0:
+        fail('every pixel of the frame is identical; this is a blank capture, not the game')
+    print(f'OK    captured {frame.shape[1]}x{frame.shape[0]} of the game '
+          f'(mean {frame.mean():.1f}, std {frame.std():.1f})')
+
+    print('PASS  startup reaches capture-method selection and captures the game')
     return 0
 
 
