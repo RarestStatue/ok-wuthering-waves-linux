@@ -57,5 +57,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-linux.txt
 
-      - name: Phase 2 exit gate
+      - name: Phase 2-3 exit gate
         run: xvfb-run -a python tools/check_linux_startup.py

@@ -29,7 +29,7 @@
 >
 > **Fifth pass, 2026-09-02: every one of the thirteen fixes re-confirmed in the code and
 > re-executed — and four findings are open again.** None is a regression.
-> **[P2-14](#p2-14--is_active-is-false-for-a-focused-window-under-a-reparenting-wm-correctness--open)**
+> **[P2-14](#p2-14--is_active-is-false-for-a-focused-window-under-a-reparenting-wm-correctness--fixed)**
 > is a real correctness defect four passes walked past: under a reparenting WM
 > `x11.is_active()` is False for the window that holds the input focus, which inverts
 > `visible`, `clickable()` and `MouseResetTask`, and makes `activate()` report a refusal of
@@ -55,6 +55,38 @@
 > templates owner's call; nothing was changed. See
 > **[Sixth pass](#sixth-pass--the-fifth-passs-four-closed-2026-09-02)**.
 >
+> **Seventh pass, 2026-09-02: the first review of Phase 3, and Phases 0-2 re-verified
+> against the tree it landed on.** Nothing regressed — 484 passed / 6 failed / 1 skipped in
+> the fork, 108 in the two X11 files, all three drift gates and the startup gate green, and
+> both repos' CI green on this exact pair (`493354a` ⇄ `ed8813a`). §11's measurements
+> reproduce, including the copy contract, the colour order and zero leaked SHM segments.
+> **Seven findings, all in Phase 3.**
+> [P3-1](#p3-1--a-depth-30-10-bit-visual-is-decoded-as-8-bit-silently-correctness-fix-first--fixed)
+> is a silently wrong picture on a 10-bit visual — latent on this machine, and the exact
+> failure mode `xshm.py`'s own docstring exists to prevent.
+> [P3-2](#p3-2--minimizing-the-game-disables-the-running-task-instead-of-pausing-it-correctness--fixed)
+> is the one that bites today: the minimized-window `CaptureException` §4 asked for reaches
+> `TaskExecutor.py:639` and is answered with `task.disable()`, so minimizing the game
+> switches the task off instead of pausing it — a Linux-only behaviour change, and the
+> window layer's own pause already does the job reversibly.
+> **P3-3** lets a dead `DISPLAY` through the availability guard, **P3-4** has `get_name()`
+> claiming a composite path that silently fell back, **P3-5** is an unverified observation
+> about the letterbox crop, and **P3-6**/**P3-7** are documentation. See
+> **[Seventh pass](#seventh-pass--phase-0-3-review-2026-09-02)**.
+>
+> **Eighth pass, 2026-09-02: six of the seven are fixed.** P3-1, P3-2, P3-3 and P3-4 are
+> code (ok-script-linux `9a53b14`, tightened by `5f1987e`), P3-6 and P3-7 are the documents
+> they asked for. Fork suite **491 passed / 6 failed / 1 skipped / 16 subtests**,
+> `test_x11_capture.py` **41 passed** (was 34), **92 / 23** with no `DISPLAY`,
+> `test_x11_window.py` **74 passed** unchanged, both drift gates exit 0 and the startup gate
+> is `PASS`. Mid grey on a 10-bit visual goes `[0, 2, 8]` -> `[128, 128, 128]`; a minimized
+> window returns `None` instead of a `CaptureException` that `TaskExecutor.py:644` answered
+> with `task.disable()`; `DISPLAY=:99` is no longer "available" and logs one ERROR instead
+> of one per grab; and `get_name()` reads the path actually taken.
+> **P3-5 is deliberately not patched** — it needs the game running, and the game was not
+> running for this pass either. See
+> **[Eighth pass](#eighth-pass--the-seventh-passs-phase-3-findings-closed-2026-09-02)**.
+>
 > | | Outcome |
 > |---|---|
 > | P2-1 | fixed — `resize_window` honours the outer contract. Measured against a 28px-title-bar window: `try_resize_to` now lands content at exactly 500x300 and reports success (was 500x328 + `resize hwnd failed`), and four re-centre iterations leave the window at 500x328 (was +28px each). Centring lands the frame exactly on the monitor centre, which is why the "secondary" subtraction below is **not** part of the fix — see the note in P2-1 |
@@ -73,6 +105,13 @@
 > | P2-15 | fixed — `linux-port` pushed; `origin/linux-port` is `12e297c` and the lock pins it. Confirmed fetchable with no credentials (`GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper= ls-remote`), which is how pip clones it |
 > | P2-16 | fixed — ok-ww `master` pushed with the repin. `Linux startup gate` run **33669383034** on `6fac179` is `success`, the first CI evidence for the `6fac179` ⇄ `12e297c` pair; both `do_start` passes are in its log |
 > | P2-17 | **open, inherited, and not ours to close** — the fifth pass's option (a) is disproven: both workflows run `tests\*.py`, and seven of those tests read `ok_templates/*.png`, so dropping `submodules` only moves the failure. Repinning the submodule is the templates owner's call; recorded, not changed |
+> | P3-1 | fixed — `_channel_fields` carries each mask's *width*, `_channel_indices` is `None` for a channel that is not 8 bits wide, and `_unpack_wide` decodes it. All six 10-bit probes correct, mid grey `[0, 2, 8]` -> `[128, 128, 128]`, MSBFirst control correct, and depth 24 still takes the `cv2.cvtColor` fast path (a test, not a comment) |
+> | P3-2 | fixed — `do_get_frame` returns `None` for a minimized window and logs once per episode. The `CaptureException` that reached `TaskExecutor.py:644` -> `task.disable()` is gone, and the window layer's reversible pause is now the whole story. The live iconify test asserts `None` and its stale-frame half is unchanged |
+> | P3-3 | fixed — `x11_capture_available()` is `xshm.available() and x11.available()`, and `_open`'s failures log once. `DISPLAY=:99` re-measured: `False` (was `True`), one ERROR for three grabs (was three) |
+> | P3-4 | fixed — `X11Grabber.composite_active` is the path actually taken, `get_name()` reads it, and `update_capture_method` switches through the new `use_composite_path` instead of waiting for the next frame. Live: direct 1.78 ms / composite 1.68 ms, both `[153, 102, 51]` |
+> | P3-5 | **open, observation, not verified against the game** — `get_crop_point`'s vertical slack is a Windows title bar; in Linux client coordinates it takes the whole letterbox off the top. Unreachable at 16:9. Deliberately not patched: the game was not running for the eighth pass either |
+> | P3-6 | fixed — `LINUX.md` gains a **System libraries** subsection: Fedora `libX11`/`libXext`/`libXcomposite`, Debian `libx11-6`/`libxext6`/`libxcomposite1`, and what their absence costs |
+> | P3-7 | fixed — the step is now `Phase 2-3 exit gate` |
 >
 > Two things the fixes cost, both measured and both accepted: `list_clients` went 0.05ms ->
 > 1.8ms and `find_hwnd` 0.68ms -> 2.45ms per call (~1.2% of the 0.2s poll), because the
@@ -1861,3 +1900,975 @@ which is the thing P2-9b added and the thing a green tick alone would not prove.
 | Lock | `requirements-linux.txt:35` → `12e297c`, fetchable anonymously |
 | Open | **P2-17 only**, inherited, and not this port's to close |
 | Phase 3 | Unblocked. Nothing in the fifth or sixth pass touches what §4 Phase 3 depends on |
+
+---
+
+# Seventh pass — Phase 0-3 review (2026-09-02)
+
+The first review of **Phase 3**, plus a re-verification of Phases 0-2 against the tree
+Phase 3 landed on. State reviewed: ok-script-linux `493354a` (branch `linux-port`, pushed),
+ok-ww `ed8813a` (`master`, pushed), venv `/home/max/vsCODE/okport-venv` (python 3.12.14),
+a real KWin/Xwayland desktop (`DISPLAY=:0`, two monitors), **the game not running**.
+
+Everything below was executed, not read. Nothing in Phases 0-2 regressed. Seven findings
+are new and all seven are in Phase 3; **P2-17 is still open and still inherited**.
+
+| | Severity | One line |
+|---|---|---|
+| **P3-1** | correctness, fix first | a depth-30 (10-bit) visual is decoded as 8-bit — a silently wrong picture, no error |
+| **P3-2** | correctness | minimizing the game **disables** the running task instead of pausing it |
+| **P3-3** | correctness of the guard | `x11_capture_available()` is True for a `DISPLAY` nothing answers, so the backend is selected and every grab logs an ERROR |
+| **P3-4** | contract | `get_name()` says `X11_Composite` for grabs that silently fell back to the direct path, and lags a method switch by one frame |
+| **P3-5** | observation, NOT verified against the game | the letterbox crop takes all vertical slack off the top, because upstream's formula is written for *window* coordinates |
+| **P3-6** | documentation | the runtime shared libraries (`libX11`, `libXext`, `libXcomposite`) are a hard requirement nothing records; missing `libXext` means no capture backend at all |
+| **P3-7** | documentation | `.github/workflows/linux.yml`'s step is still called `Phase 2 exit gate` after growing the Phase 3 assertions |
+
+## What checks out
+
+Every load-bearing claim in `PORT.md` §11 and in `LINUX.md`'s Phase 3 section reproduces.
+
+| Claim | Result |
+|---|---|
+| Fork suite | **484 passed / 6 failed / 1 skipped / 10 subtests** — `LINUX.md:253`'s number exactly, and the 6 are §9b's Windows-only set, no new ones |
+| `tests/test_x11_window.py` + `tests/test_x11_capture.py` | **108 passed** (74 + 34); with `DISPLAY` unset **85 passed, 23 skipped** — `LINUX.md:274-275`'s 61/13 and 24/10 |
+| `tools/scan_module_level_win32.py --check` | exit 0, `TOTAL 27`, same 4 calling a loader at import |
+| `tools/check_linux_imports.py` | exit 0, **70/70** resolved |
+| `tools/check_linux_startup.py` | `PASS`; `do_start selected X11 + PostMessageInteraction`, `capture backend is X11CaptureMethod`, and the frame step reports itself skipped with no game — which is the documented shape |
+| CI, both repos, on this pair | fork `Linux port gates` **33672722286** on `493354a` `success`; ok-ww `Linux startup gate` **33672918236** on `ed8813a` `success`, and its log carries `OK    do_start selected X11 + PostMessageInteraction` — so the X11 branch is proven under `xvfb-run`, not only here |
+| Lock ⇄ fork pin | `requirements-linux.txt:35` pins `493354a`, which is `origin/linux-port`'s head. Both repos clean and pushed; P2-15/P2-16's failure mode has not come back |
+| §11's throughput | reproduced on a 1920x1080 test window: `X11` (SHM) **1.06 ms**, `X11` (`XGetImage`) **9.45 ms**, `X11_Composite` **1.01 ms**. §11 measured 2.28 / 11.01 / 2.16 at that size; this machine is quicker today and the 6-9x ratio holds |
+| The copy contract [V14] | a frame from the SHM path is byte-identical after the next grab into the same segment |
+| Colour | a window painted `0x336699` grabs as BGR `[153, 102, 51]` — no double swap, on both the direct and the composite path |
+| Segment hygiene | `ipcs -m` shows 2 segments while three grabbers are live and **0** after `close()`; the `IPC_RMID`-straight-after-`XShmAttach` claim holds |
+| E3's re-naming | the composite path re-names the pixmap per grab and costs the same as the direct path (1.01 vs 1.06 ms) |
+| `X11CaptureMethod.connected()`'s extra round trip | `x11.exists` is **0.074 ms**, and **0.052 ms** with a thread hammering `list_clients` on the shared python-xlib connection concurrently. `TaskExecutor.can_capture` calls it before every `get_frame`, and against a 1.0 ms grab that is not a cost worth removing |
+| `winreg` on Linux (Phase 1, re-checked) | ok-ww's game-install detection is safe: the stub's `winreg` raises `FileNotFoundError`, an `OSError`, which `config.py`'s `_find_pc_exe_from_registry` and `_find_most_recently_run_pc_exe` already catch. The constants are real ints, so `KEY_READ \| KEY_WOW64_64KEY` does not `TypeError` |
+| `capture_rect` ⇄ `get_capture_origin` | agree, and E5's choice of `client_*` over `real_*` is right for Linux — but the shared formula has its own problem, see **P3-5** |
+| Reuse-after-`close()` | not reachable in production: every `capture_method.close()` (`DeviceManager.py:142,679,698,706`, `update.py:73,92`) drops the reference. The grabber does survive it anyway — verified: `close()` then `grab()` reopens the display and re-redirects |
+| The drift gate covers Phase 3 | `tests/test_x11_window.py:1075-1078` walks `ok/compat/xshm.py` and `ok/device/capture_methods/x11_capture.py` for Win32 references |
+
+One trap worth repeating because it cost this pass ten minutes and `LINUX.md:249` already
+warns about it: **`pytest tests -q` from the fork root is `-qq`** (`pytest.ini`'s `addopts`
+already carries `-q`) and suppresses the `N failed, M passed` line entirely, leaving a
+`FAILED` row as the last output. Use `-o addopts="-ra"`.
+
+---
+
+## P3-1 — a depth-30 (10-bit) visual is decoded as 8-bit, silently [correctness, fix first] — **FIXED**
+
+`ok/compat/xshm.py:296-316` derives each channel's *byte* index from the low set bit of its
+mask and never checks how **wide** the mask is. A depth-30 TrueColor visual — 10 bits per
+channel, `bits_per_pixel` still 32, masks `R=0x3FF00000 G=0x000FFC00 B=0x000003FF` — has
+low bits at 20, 10 and 0, so `index()` returns bytes 2, 1, 0, which is exactly the
+`(0, 1, 2)` fast path at `:339`. `cv2.cvtColor(..., COLOR_BGRA2BGR)` then takes the low
+byte of each 10-bit field as if it were the channel.
+
+No exception and no log line: a wrong *picture*, which is the one failure mode the module's
+own docstring (`xshm.py:299-303`) says the general form exists to prevent.
+
+Measured, with a hand-made `XImage` carrying those masks (`bits_per_pixel=32`, `depth=30`,
+LSBFirst):
+
+| 10-bit pixel | decoded BGR | should be |
+|---|---|---|
+| pure red `(1023, 0, 0)` | `[0, 0, 240]` | `[0, 0, 255]` |
+| pure green `(0, 1023, 0)` | `[0, 252, 15]` | `[0, 255, 0]` |
+| pure blue `(0, 0, 1023)` | `[255, 3, 0]` | `[255, 0, 0]` |
+| mid grey `(512, 512, 512)` | `[0, 2, 8]` | `[128, 128, 128]` |
+| white `(1023, 1023, 1023)` | `[255, 255, 255]` | `[255, 255, 255]` |
+
+Mid grey arriving as near-black is what makes this worth code rather than a note: the
+picture is not merely tinted, it is non-monotonic in luminance, so every template match and
+every OCR call degrades and the app has nothing to report.
+
+**Reachability, stated honestly.** This machine's root is depth 24 (`xdpyinfo`:
+`depth of root window: 24 planes`, and no depth-30 visual is advertised), so this is
+**latent here, not live**. It becomes live on an X server with `DefaultDepth 30` (NVIDIA's
+30-bit mode) or when a client picks a 30-bit visual on a depth-24 root. The fix is small
+and removes a whole class, so it is worth doing rather than documenting.
+
+### The patch
+
+`ok/compat/xshm.py`. Replace `_channel_indices` (`:296-316`) with a field-based helper plus
+a wide unpacker, and route `image_to_bgr` (`:319-349`) through them.
+
+```python
+def _channel_fields(image, masks=None):
+    """``((shift, width), ...)`` for B, G, R, or ``None`` for a mask that is absent.
+
+    ``width`` is the part ``_channel_indices`` used to ignore. A depth-30 TrueColor visual
+    is 10 bits per channel with ``bits_per_pixel`` still 32, and its low set bits land on
+    bytes 0, 1, 2 -- i.e. straight onto the BGRA fast path, where the low byte of each
+    10-bit field is read as the channel. Mid grey came back as ``[0, 2, 8]``.
+    """
+    red, green, blue = image.red_mask, image.green_mask, image.blue_mask
+    if not (red or green or blue) and masks:
+        red, green, blue = masks
+
+    def field(mask):
+        mask = int(mask)
+        if not mask:
+            return None
+        shift = (mask & -mask).bit_length() - 1
+        return shift, (mask >> shift).bit_length()
+
+    return field(blue), field(green), field(red)
+
+
+def _channel_indices(image, masks=None):
+    """Byte offsets of B, G, R inside each 32-bit pixel, for 8-bit-per-channel visuals.
+
+    ``None`` for a channel whose mask is absent *or* is not 8 bits wide; the caller falls
+    back to :func:`_unpack_wide` for the second case.
+    """
+    def index(field):
+        if field is None or field[1] != 8:
+            return None
+        byte = field[0] // 8
+        return byte if image.byte_order == LSB_FIRST else 3 - byte
+
+    return tuple(index(f) for f in _channel_fields(image, masks))
+
+
+def _unpack_wide(array, fields, byte_order):
+    """Channels wider than 8 bits (a depth-30 visual), scaled down to 8. BGR order out."""
+    words = array.astype(np.uint32)
+    if byte_order == LSB_FIRST:
+        words = (words[:, :, 0] | (words[:, :, 1] << 8)
+                 | (words[:, :, 2] << 16) | (words[:, :, 3] << 24))
+    else:
+        words = (words[:, :, 3] | (words[:, :, 2] << 8)
+                 | (words[:, :, 1] << 16) | (words[:, :, 0] << 24))
+    out = np.empty(array.shape[:2] + (3,), dtype=np.uint8)
+    for channel, (shift, width) in enumerate(fields):        # fields is (blue, green, red)
+        value = (words >> shift) & ((1 << width) - 1)
+        value = value >> (width - 8) if width >= 8 else value << (8 - width)
+        out[:, :, channel] = value.astype(np.uint8)
+    return out
+```
+
+and in `image_to_bgr`, replace the block that currently reads
+
+```python
+    blue, green, red = _channel_indices(frame, masks)
+    if (blue, green, red) == (0, 1, 2):
+        # The measured path: one 0.15 ms pass that drops the alpha byte and copies.
+        bgr = cv2.cvtColor(array, cv2.COLOR_BGRA2BGR)
+    else:
+        if None in (blue, green, red):
+            raise ValueError(f'X11 image has no RGB masks: {frame.red_mask:#x} '
+                             f'{frame.green_mask:#x} {frame.blue_mask:#x}')
+        bgr = np.ascontiguousarray(array[:, :, [blue, green, red]])
+```
+
+with
+
+```python
+    fields = _channel_fields(frame, masks)
+    if None in fields:
+        raise ValueError(f'X11 image has no RGB masks: {frame.red_mask:#x} '
+                         f'{frame.green_mask:#x} {frame.blue_mask:#x}')
+    blue, green, red = _channel_indices(frame, masks)
+    if (blue, green, red) == (0, 1, 2):
+        # The measured path: one 0.15 ms pass that drops the alpha byte and copies.
+        bgr = cv2.cvtColor(array, cv2.COLOR_BGRA2BGR)
+    elif None in (blue, green, red):
+        # A channel that is not 8 bits wide -- a depth-30 (10-bit) visual. Byte indices
+        # cannot express it, and taking the fast path anyway is a silently wrong picture.
+        bgr = _unpack_wide(array, fields, frame.byte_order)
+    else:
+        bgr = np.ascontiguousarray(array[:, :, [blue, green, red]])
+```
+
+The `pixels_per_row != width` slice at `:347-348` stays where it is and still applies.
+
+The unpacker was prototyped against the masks above before being written down; it returns
+`[0,0,255]`, `[0,255,0]`, `[255,0,0]`, `[128,128,128]`, `[255,255,255]`, `[0,0,0]` for the
+six probes, and `[0,0,255]` for the MSBFirst red control.
+
+### Tests to add
+
+In `tests/test_x11_capture.py`, `TestImageToBgr`. `make_image` needs a `depth` argument
+(it currently hard-codes `depth=24` at `:46`); add `depth=24` to its signature and pass it
+through, which changes nothing for the existing five tests.
+
+```python
+DEPTH30 = (0x3FF00000, 0x000FFC00, 0x000003FF)   # red, green, blue of a 10-bit visual
+
+
+def make_10bit_image(r, g, b, byte_order=0):
+    """One depth-30 pixel. `bits_per_pixel` is still 32, which is the whole trap."""
+    word = (r << 20) | (g << 10) | b
+    order = range(0, 32, 8) if byte_order == 0 else range(24, -8, -8)
+    pixels = np.array([[[(word >> s) & 0xff for s in order]]], dtype=np.uint8)
+    return make_image(pixels, byte_order=byte_order, masks=DEPTH30, depth=30)
+
+
+def test_a_ten_bit_visual_is_not_read_as_eight_bit(self):
+    """A depth-30 visual lands on the BGRA fast path unless the mask *width* is checked.
+
+    Unfixed, mid grey came back as [0, 2, 8] -- not a tint, a picture whose luminance is
+    not even monotonic, with no exception and no log line.
+    """
+    from ok.compat import xshm
+
+    for (r, g, b), expected in (((1023, 0, 0), [0, 0, 255]),
+                                ((0, 1023, 0), [0, 255, 0]),
+                                ((0, 0, 1023), [255, 0, 0]),
+                                ((512, 512, 512), [128, 128, 128]),
+                                ((1023, 1023, 1023), [255, 255, 255])):
+        image, _buffer = make_10bit_image(r, g, b)
+        self.assertEqual(expected, xshm.image_to_bgr(image)[0, 0].tolist())
+
+
+def test_a_ten_bit_visual_on_a_big_endian_server(self):
+    from ok.compat import xshm
+
+    image, _buffer = make_10bit_image(1023, 0, 0, byte_order=1)
+    self.assertEqual([0, 0, 255], xshm.image_to_bgr(image)[0, 0].tolist())
+
+
+def test_the_eight_bit_path_still_takes_the_cheap_copy(self):
+    """The regression guard for the fix: depth 24 must not fall into `_unpack_wide`."""
+    from ok.compat import xshm
+
+    pixels = np.array([[[1, 2, 3, 255]]], dtype=np.uint8)
+    image, _buffer = make_image(pixels)
+    self.assertEqual((0, 1, 2), xshm._channel_indices(image.contents))
+    self.assertEqual([1, 2, 3], xshm.image_to_bgr(image)[0, 0].tolist())
+```
+
+### Reproducing the defect before the fix
+
+```python
+import ctypes, numpy as np
+from ok.compat.win32_stub import install; install()
+from ok.compat import xshm
+
+DEPTH30 = (0x3FF00000, 0x000FFC00, 0x000003FF)
+word = (512 << 20) | (512 << 10) | 512                    # mid grey
+buf = (ctypes.c_ubyte * 4)()
+buf[0:4] = bytes([(word >> s) & 0xff for s in (0, 8, 16, 24)])
+img = xshm.XImage(width=1, height=1, format=xshm.Z_PIXMAP,
+                  data=ctypes.cast(buf, ctypes.c_void_p).value, byte_order=0, depth=30,
+                  bytes_per_line=4, bits_per_pixel=32,
+                  red_mask=DEPTH30[0], green_mask=DEPTH30[1], blue_mask=DEPTH30[2])
+print(xshm._channel_indices(img))                          # (0, 1, 2)  <- the fast path
+print(xshm.image_to_bgr(ctypes.pointer(img))[0, 0])        # [0 2 8]    <- near-black
+```
+
+---
+
+## P3-2 — minimizing the game **disables** the running task instead of pausing it [correctness] — **FIXED**
+
+`ok/device/capture_methods/x11_capture.py:124-135` raises a `CaptureException` when the
+grab returns nothing and the window is minimized. §4 Phase 3 asked for exactly that ("so
+the UI can tell the user 'un-minimize the game'"), and §11 E4 correctly gated it on
+`x11.exists()`. What neither checked is where a `CaptureException` *goes*.
+
+The chain, all in the fork:
+
+1. `base.py:43-44` re-wraps it, message preserved.
+2. `TaskExecutor.next_frame` (`:286-309`) calls `self.method.get_frame()` on every
+   iteration, and `check_enabled` (`:329-335`) does **not** stop it once the executor is
+   paused — it sleeps 1 s and falls through. So the raise still happens after the window
+   layer has paused everything.
+3. The exception leaves `next_frame`, leaves the task (`ok/task/task.py:539` is how a task
+   asks for one), and lands in the task loop's `except Exception` at
+   `TaskExecutor.py:639`, which emits `capture_error` (`:641`), sets `task.running = False`
+   (`:643`) and calls **`task.disable()` (`:644`)**.
+
+So a minimize does not pause the bot, it **turns the task off**. After restoring the window
+the user has to re-enable it by hand, and the app's own recovery path — which already
+exists and already works — never gets a chance:
+
+* `x11_window.py:410` computes `pos_valid = (not self.is_minimized()) and check_pos(...)`,
+* `:411-417` pauses the executor on the transition and emits
+  `'Paused because game window is minimized or out of screen!'`,
+* and when the window comes back, `pos_valid` flips and play resumes.
+
+The Windows path never reaches `task.disable()` for this: `BitBltCaptureMethod.do_get_frame`
+(`bitblt.py:42-57`) returns whatever `capture_by_bitblt` produced and raises nothing for a
+minimized window, so on Windows a minimize is only the pause above. **This is a
+Linux-only behaviour change, introduced by Phase 3.**
+
+One thing this pass did **not** measure, flagged because it widens the blast radius if
+true: `x11.is_minimized` (`ok/compat/x11.py:374-391`) answers True for *any* window that is
+not viewable (`:391`), so a window that is momentarily unmapped is "minimized" too. Whether
+Wine/DXVK unmaps the game's toplevel during a fullscreen mode switch was not tested — the
+game was not running for this pass. It is one `xprop -spy WM_STATE` away from being settled
+and should be settled before Phase 4 puts real play time on this path.
+
+### The patch
+
+The capture layer should stop raising and let the window layer's pause carry the message —
+it is the same message, it is already actionable, and it pauses rather than disables.
+
+`ok/device/capture_methods/x11_capture.py`, in `__init__` (`:97-100`), add:
+
+```python
+        self._minimized_reported = False
+```
+
+and replace `do_get_frame`'s `:123-136` tail with:
+
+```python
+            frame = self.grabber.grab(hwnd, x, y, width, height)
+            if frame is None and x11.exists(hwnd) and x11.is_minimized(hwnd):
+                # Deliberately NOT a CaptureException. A CaptureException out of a task
+                # reaches `TaskExecutor`'s `except Exception` (TaskExecutor.py:639), which
+                # calls `task.disable()` (:644) -- so raising here turns a minimize into a
+                # switched-off task the user has to turn back on. The window layer already
+                # handles this correctly and reversibly: `pos_valid` goes False
+                # (x11_window.py:410), the executor is paused and the user is told
+                # "Paused because game window is minimized or out of screen!" (:411-417),
+                # and play resumes when the window comes back.
+                #
+                # `exists` first, and it is not belt and braces: `is_minimized`'s last
+                # resort is "not viewable", which a window id that no longer names anything
+                # answers True [V7].
+                if not self._minimized_reported:
+                    self._minimized_reported = True
+                    logger.info(f'{hwnd:#x} is minimized; X11 cannot capture it. '
+                                f'The window layer pauses the executor and notifies.')
+                return None
+            if frame is not None:
+                self._minimized_reported = False
+            return frame
+```
+
+Nothing else changes: `CaptureException` stays imported for nothing, so drop the import at
+`:40` as well, and trim the module docstring's third bullet (`:26-28`) — replace
+
+```
+* **A minimized window raises rather than returning None**, with a message the UI can show,
+  because "un-minimize the game" is something the user can act on and a generic capture
+  failure is not. Occlusion needs no such treatment on Xwayland [V7].
+```
+
+with
+
+```
+* **A minimized window returns None, it does not raise.** A `CaptureException` out of a
+  task reaches `TaskExecutor.py:639` and is answered with `task.disable()` -- a minimize
+  would switch the task off instead of pausing it. The window layer already pauses the
+  executor and tells the user, reversibly, when `pos_valid` goes False. Occlusion needs no
+  treatment at all on Xwayland [V7].
+```
+
+### Tests to change
+
+`tests/test_x11_capture.py:253` `test_a_minimized_window_raises_something_the_user_can_act_on`
+must be rewritten, not deleted — it is the guard for this whole finding:
+
+```python
+    def test_a_minimized_window_is_no_frame_and_does_not_kill_the_task(self):
+        """A CaptureException here reaches TaskExecutor.py:639 -> task.disable().
+
+        Minimizing the game must pause the bot (the window layer does that through
+        `pos_valid`), never switch the task off. Returning None is what keeps that true.
+        """
+        method, grabber, hwnd_window = self.make(frame=None)
+        with unittest.mock.patch('ok.compat.x11.exists', return_value=True), \
+                unittest.mock.patch('ok.compat.x11.is_minimized', return_value=True):
+            self.assertIsNone(method.do_get_frame())
+            self.assertIsNone(method.do_get_frame())      # reported once, not per poll
+```
+
+(match `self.make(...)` to whatever the existing fixture in that class is named; the
+existing test at `:253` shows the shape). `test_a_window_that_no_longer_exists_is_not_reported_as_minimized`
+(`:265`) still passes unchanged and is still worth keeping — it is E4's guard.
+
+Add one more, so the "report once" half is pinned:
+
+```python
+    def test_the_minimized_notice_is_logged_once_per_episode(self):
+        method, grabber, hwnd_window = self.make(frame=None)
+        with unittest.mock.patch('ok.compat.x11.exists', return_value=True), \
+                unittest.mock.patch('ok.compat.x11.is_minimized', return_value=True), \
+                unittest.mock.patch.object(x11_capture.logger, 'info') as info:
+            method.do_get_frame()
+            method.do_get_frame()
+            self.assertEqual(1, info.call_count)
+        grabber.frame = np.zeros((4, 4, 3), dtype=np.uint8)   # window restored
+        method.do_get_frame()
+        with unittest.mock.patch('ok.compat.x11.exists', return_value=True), \
+                unittest.mock.patch('ok.compat.x11.is_minimized', return_value=True), \
+                unittest.mock.patch.object(x11_capture.logger, 'info') as info:
+            method.do_get_frame()
+            self.assertEqual(1, info.call_count)          # a new episode reports again
+```
+
+### If you disagree with the direction
+
+The alternative that keeps a capture-layer message is to raise only while the window layer
+has *not yet* noticed — `if not hwnd_window.pos_valid: return None` before the raise. Do
+not take it: the poll runs every 0.2 s and a task can sit inside `next_frame` for 6, so the
+race is wide open and the failure it leaves is exactly the one above, just rarer and
+therefore harder to attribute.
+
+---
+
+## P3-3 — `x11_capture_available()` is True for a `DISPLAY` nothing answers [correctness of the guard, diagnosability] — **FIXED**
+
+`x11_capture.py:54-61` delegates to `xshm.available()` (`xshm.py:270-272`), which is
+`the libraries load` **and** `DISPLAY is set`. Neither proves a server will answer. §11 E7
+introduced this guard so that "a machine without X11 is not stranded on a backend that can
+never produce a frame" — a stale or wrong `DISPLAY` is exactly that machine, and the guard
+lets it through.
+
+Measured with `DISPLAY=:99` (no server):
+
+```
+x11_capture_available: True
+x11.available (python-xlib): False
+ERROR xshm:cannot connect to X display ':99' for capture
+grab -> None
+ERROR xshm:cannot connect to X display ':99' for capture
+grab -> None
+ERROR xshm:cannot connect to X display ':99' for capture
+grab -> None
+```
+
+Two defects in one: the branch at `update.py:42-52` selects `X11`, returns it, and never
+falls through to anything else; and `_open` (`xshm.py:377-393`) logs at ERROR on **every**
+grab, so the log is the failure rather than a report of it. Note the window layer's own
+guard already gets this right — `ok/compat/x11.available()` (`x11.py:98-101`) opens a
+connection and answers False.
+
+### The patch
+
+`ok/device/capture_methods/x11_capture.py:54-61`:
+
+```python
+def x11_capture_available():
+    """True when the pixel path can run at all: the libraries load, and a display answers.
+
+    The sibling of ``windows_graphics_available()``, and used the same way -- to keep
+    ``update_capture_method`` from selecting a backend that can never produce a frame, so
+    the next entry in the user's ``capture_method`` list gets its turn.
+
+    ``xshm.available()`` alone is not enough: it proves libX11/libXext loaded and
+    ``DISPLAY`` is set, and a stale ``DISPLAY`` passes both while every grab fails.
+    ``x11.available()`` is the window layer's own guard and actually opens a connection,
+    on a connection it then keeps.
+    """
+    return xshm.available() and x11.available()
+```
+
+`x11` is already imported at `:39`; nothing else moves.
+
+`ok/compat/xshm.py`, `_open` (`:377-393`) — make the two failures log once, the way
+`_load` already does with `_load_error_logged` (`:154`, `:252-254`). Add beside it:
+
+```python
+_open_error_logged = False
+```
+
+and in `_open`, replace the two bare `logger.error(...)` calls with:
+
+```python
+        global _open_error_logged
+        name = os.environ.get('DISPLAY')
+        if not name:
+            if not _open_error_logged:
+                _open_error_logged = True
+                logger.error('DISPLAY is not set; X11 capture needs X11 or Xwayland')
+            return None
+        display = libs.x11.XOpenDisplay(name.encode())
+        if not display:
+            if not _open_error_logged:
+                _open_error_logged = True
+                logger.error(f'cannot connect to X display {name!r} for capture')
+            return None
+        _open_error_logged = False
+        self._display = display
+        return display
+```
+
+### Tests to add
+
+```python
+    def test_an_unanswerable_display_is_not_available(self):
+        """A stale DISPLAY passes `xshm.available()` and then fails every grab.
+
+        `xshm.available()` is `the libraries load` and `DISPLAY is set`; neither proves a
+        server answers. Measured before the fix with `DISPLAY=:99`:
+        `x11_capture_available()` True, `x11.available()` False, and one ERROR per grab.
+        """
+        from ok.compat import x11
+        from ok.device.capture_methods import x11_capture
+
+        with unittest.mock.patch.object(x11, 'available', return_value=False):
+            self.assertFalse(x11_capture.x11_capture_available())
+        with unittest.mock.patch.object(x11, 'available', return_value=True), \
+                unittest.mock.patch('ok.compat.xshm.available', return_value=True):
+            self.assertTrue(x11_capture.x11_capture_available())
+```
+
+Patch `x11.available`, do **not** point the real `DISPLAY` at a dead server in a unit test:
+`ok/compat/x11.py` memoises its connection in a module global (`_display`, `x11.py:36`), so
+a test that actually connects to `:99` leaves a `None` behind and every live test that runs
+later in the same process silently skips or fails. What needs pinning here is the
+composition, not python-xlib's connect — that is `x11.available()`'s own job and it already
+has tests. The behaviour with a genuinely dead display is reproduced out-of-process in the
+snippet below.
+
+### Reproducing the defect before the fix
+
+```sh
+cd /home/max/vsCODE/ok-script-linux
+DISPLAY=:99 /home/max/vsCODE/okport-venv/bin/python -c "
+import sys; sys.path.insert(0, '.')
+from ok.compat.win32_stub import install; install()
+from ok.compat import x11, xshm
+from ok.device.capture_methods import x11_capture
+print('x11_capture_available:', x11_capture.x11_capture_available())   # True  <- the bug
+print('x11.available:', x11.available())                               # False <- the truth
+g = xshm.X11Grabber()
+for _ in range(3):
+    print('grab ->', g.grab(0x123456, 0, 0, 100, 100))                 # ERROR each time
+"
+```
+
+The existing `test_an_unavailable_pixel_path_falls_through_to_the_next_method`
+(`tests/test_x11_capture.py:362`) already covers the fall-through and needs no change.
+
+---
+
+## P3-4 — `get_name()` reports a composite path that is not being used [contract, diagnosability] — **FIXED**
+
+`x11_capture.py:138-139`:
+
+```python
+    def get_name(self):
+        return 'X11_Composite' if self.grabber.use_composite else 'X11'
+```
+
+`use_composite` is what the user *asked for*, not what the grabber is *doing*. Two ways
+they part company:
+
+**(a) A silent fallback keeps the name.** `_composite_pixmap` (`xshm.py:522-577`) sets
+`_composite_failed` and returns 0 in three places — no libXcomposite (`:538`), no Composite
+extension on the server (`:543-550`), a refused `XCompositeRedirectWindow` (`:557-565`) —
+and from then on every grab is the plain direct path. `get_name()` still says
+`X11_Composite`, and so does everything that logs it: `DeviceManager`, the GUI's
+capture-method display, and `tools/check_linux_startup.py:116`. The three `logger.info`
+lines are the only trace, and they are below the level most users will ever look at.
+
+**(b) A method switch lags by one frame.** `update.py:49` sets the module flag and
+`get_capture` (`:89-96`) hands back the *same live object*; the grabber is only rebuilt
+inside `do_get_frame` (`x11_capture.py:108-112`). Between the switch and the next frame,
+`get_name()` reports the old path. `check_linux_startup.py:119` accepts either name so the
+gate does not catch it, and `DeviceManager` logs the wrong one.
+
+Neither is a wrong picture. Both make the one question you ask when the composite path
+misbehaves — "which path am I actually on?" — unanswerable from the log.
+
+### The patch
+
+`ok/compat/xshm.py`, on `X11Grabber`, beside `shm_active` (`:671-675`):
+
+```python
+    @property
+    def composite_active(self):
+        """True when grabs really are going through the XComposite pixmap.
+
+        Distinct from ``use_composite``, which is what was asked for: the composite path
+        falls back to the direct grab silently and permanently on a missing libXcomposite,
+        a server without the extension, or a refused redirect.
+        """
+        with self._lock:
+            return bool(self.use_composite and not self._composite_failed)
+```
+
+`ok/device/capture_methods/x11_capture.py` — `get_name` becomes:
+
+```python
+    def get_name(self):
+        # `composite_active`, not `use_composite`: the composite path degrades to the
+        # direct grab silently, and a name that keeps claiming otherwise is the reason a
+        # composite problem is hard to see in a log.
+        return 'X11_Composite' if self.grabber.composite_active else 'X11'
+```
+
+and add, for (b):
+
+```python
+    def use_composite_path(self, composite):
+        """Switch the grabber between the direct and the XComposite path, now.
+
+        Called by ``update_capture_method``: ``get_capture`` hands back this same object
+        across a reconfiguration, so the path cannot be a constructor argument -- and
+        leaving the rebuild to the next ``do_get_frame`` means ``get_name()`` reports the
+        old path until a frame happens to be asked for.
+        """
+        with self.lock:
+            if self.grabber.use_composite != composite:
+                self.grabber.close()
+                self.grabber = xshm.X11Grabber(use_composite=composite)
+```
+
+`ok/device/capture_methods/update.py:49-52` becomes:
+
+```python
+                x11_capture.use_composite = (method_name == 'X11_Composite')
+                if x11 := get_capture(capture_method, X11CaptureMethod, hwnd, exit_event):
+                    x11.use_composite_path(x11_capture.use_composite)
+                    logger.info(f'use {method_name} capture')
+                    return x11
+```
+
+Keep `do_get_frame`'s lazy rebuild (`:108-112`) as it is — it is now a safety net rather
+than the only path, and it costs one comparison per frame.
+
+### Tests to add
+
+```python
+    def test_the_name_follows_the_path_actually_taken(self):
+        method, grabber, _ = self.make()
+        method.grabber.use_composite = True
+        method.grabber._composite_failed = False
+        self.assertEqual('X11_Composite', method.get_name())
+        method.grabber._composite_failed = True          # silently fell back
+        self.assertEqual('X11', method.get_name())
+
+    def test_switching_the_path_takes_effect_before_the_next_frame(self):
+        """`get_capture` reuses the object, so `update_capture_method` must not wait."""
+        # extend tests/test_x11_capture.py:355 `test_x11_composite_sets_the_flag` with:
+        self.assertTrue(capture.grabber.use_composite)
+        self.assertEqual('X11_Composite', capture.get_name())   # without a frame first
+```
+
+`test_switching_to_composite_rebuilds_the_grabber` (`:310`) covers the `do_get_frame` path
+and stays.
+
+---
+
+## P3-5 — the letterbox crop takes all vertical slack off the top [observation, NOT verified against the game] — **OPEN, needs the game running**
+
+`capture_rect` (`x11_capture.py:84`) and the inherited `HwndWindow.get_capture_origin` both
+call `get_crop_point(client_width, client_height, width, height)`, and `get_crop_point`
+(`geometry.py:14-17`) splits the *horizontal* slack evenly while giving **all** the
+vertical slack to the top:
+
+```python
+    x = round((frame_width - target_width) / 2)
+    y = (frame_height - target_height) - x
+```
+
+`geometry.py:8-10` explains why, and the explanation is a Windows one: `y` is "the *title
+bar*, i.e. all remaining vertical slack after subtracting one border". That is right in
+**window** coordinates, which is what `BitBltCaptureMethod.do_get_frame` passes
+(`bitblt.py:47-48`: `get_crop_point(self.hwnd_window.window_width,
+self.hwnd_window.window_height, ...)`).
+
+On Linux the crop is computed in **client** coordinates — correctly, per §11 E5, because
+the X client window *is* the client area and decorations belong to the WM's frame
+(`window_x11.py:161-176`). So there is no title bar in the slack. When
+`do_update_window_size` crops the height for the aspect ratio (`x11_window.py:403-407`),
+every pixel of slack is real letterbox, and this formula takes it all off the top.
+
+Worked example, arithmetic only:
+
+| | |
+|---|---|
+| client geometry | 1920 x 1200 |
+| `frame_aspect_ratio` | 16:9, so `height` becomes `int(1920 / 1.7778)` = 1080 |
+| `get_crop_point(1920, 1200, 1920, 1080)` | `x = 0`, `y = 120 - 0 = 120` |
+| captured rows | 120 .. 1200 |
+| correct if the game letterboxes 60 top / 60 bottom | 60 .. 1140 |
+
+i.e. 60 rows of content lost at the top and 60 rows of black gained at the bottom.
+
+**Why this is filed as an observation and not a finding with a patch:**
+
+1. It is unreachable at 16:9, and `config.py`'s `supported_resolution` (`ratio: '16:9'`,
+   `resize_to` all 16:9) plus `try_resize_to` steer the window there.
+2. Capture and the overlay use the **same** origin, so clicks still land where the picture
+   says they do. The symptom is a mis-framed picture, not mis-aimed input.
+3. The formula is upstream's and shared with Windows. Changing `get_crop_point` changes
+   BitBlt too, which is not this port's call; the honest fix would be a Linux-only origin
+   in `capture_rect` **and** a matching override of `get_capture_origin` in `X11Window`,
+   which is a bigger change than the evidence currently justifies.
+4. **It has not been checked against the game.** The game was not running for this pass.
+
+**What to measure before touching anything** — the whole question is whether a
+non-16:9 Proton window letterboxes at all, or just renders the window's real aspect:
+
+```sh
+# game running, windowed, deliberately taller than 16:9 (e.g. 1920x1200)
+PYTHONPATH=. python3 - <<'PY'
+from config import config
+from ok import OK
+ok = OK(config); ok.device_manager.update_pc_device(); ok.device_manager.do_start(notify=False)
+w, cap = ok.device_manager.hwnd_window, ok.device_manager.capture_method
+w.do_update_window_size()
+print('client', w.client_width, w.client_height, 'cropped', w.width, w.height)
+import cv2; cv2.imwrite('/tmp/okww-crop.png', cap.get_frame())
+PY
+```
+
+Then look at `/tmp/okww-crop.png`: a black band along the **bottom** and clipped content at
+the top is this defect; content filling the frame is the game rendering the window's own
+aspect, and there is nothing to fix. Record the answer here either way.
+
+---
+
+## P3-6 — the runtime shared libraries are a hard requirement nothing records [documentation] — **FIXED**
+
+`ok/compat/xshm.py:249-250` loads `libX11.so.6` and `libXext.so.6`, and `:257` optionally
+`libXcomposite.so.1`. None of the three is a Python package, so neither
+`requirements-linux.txt` nor `pyproject.toml` can pull them and neither mentions them.
+
+If `libXext` (or `libX11`) is absent the consequence is total and quiet: `_load()` returns
+None -> `x11_capture_available()` is False -> the branch at `update.py:42-45` is skipped
+for **both** names -> `update_capture_method` returns None -> `do_start` selects no capture
+method at all. The single trace is one line, `libX11/libXext are not loadable, X11 capture
+is unavailable: ...`, logged once by design (`xshm.py:252-254`).
+
+`LINUX.md`'s "What Phase 3 added" table names the libraries in a cell describing what
+`xshm.py` does, but nowhere says they must be installed, and the install snippet at the
+bottom of "Test baseline on Linux" lists only Python packages. ok-ww's CI gets them
+transitively through `xvfb` (`.github/workflows/linux.yml:49-51`), which is why nothing has
+noticed.
+
+### The patch
+
+One paragraph in `LINUX.md`, in the Phase 3 section, after the "Five things are
+load-bearing" list:
+
+```markdown
+### System libraries
+
+The pixel path is `ctypes` over the system X libraries, so they are a **runtime
+requirement** that no Python lock can express:
+
+| | Fedora | Debian / Ubuntu |
+|---|---|---|
+| required | `libX11`, `libXext` | `libx11-6`, `libxext6` |
+| optional (`X11_Composite` only) | `libXcomposite` | `libxcomposite1` |
+
+Without `libX11`/`libXext`, `x11_capture_available()` is False, both `X11` and
+`X11_Composite` are skipped, `update_capture_method` returns None and the app starts with
+no capture method — with one log line as the only trace
+(`libX11/libXext are not loadable, X11 capture is unavailable`). Without `libXcomposite`,
+`X11` works and `X11_Composite` degrades to it.
+```
+
+The Fedora names were confirmed on this machine (`rpm -qf /usr/lib64/libX11.so.6` ->
+`libX11`, and likewise for the other two). Phase 6 (packaging) is where these become
+`Requires:` lines; this is the note that keeps them from being forgotten until then.
+
+---
+
+## P3-7 — the ok-ww workflow step is still called `Phase 2 exit gate` [documentation] — **FIXED**
+
+`.github/workflows/linux.yml:60` names the step `Phase 2 exit gate`, and `tools/check_linux_startup.py`
+now carries the Phase 3 assertions too (its own docstring says so, `:2`, "Phase 2 and Phase
+3 exit gate"). Run **33672918236**'s log therefore reads
+`Phase 2 exit gate  OK    capture backend is X11CaptureMethod`.
+
+Cosmetic, and worth fixing in the same commit as anything else here because this file's
+step names are what the sixth pass's "read the run, not the YAML" rule quotes.
+
+```yaml
+      - name: Phase 2-3 exit gate
+        run: xvfb-run -a python tools/check_linux_startup.py
+```
+
+The header comment at `:1-11` is still accurate and needs no change.
+
+---
+
+## Suggested order (seventh pass)
+
+1. **P3-2** — it is the only one that changes what a user experiences today, and it is a
+   deletion plus a flag.
+2. **P3-3** — two small edits, and it removes a log flood that would otherwise bury the
+   evidence for anything else.
+3. **P3-1** — self-contained, latent, and closes a whole class. Do it before Phase 4 so the
+   capture layer is not still moving while input lands on top of it.
+4. **P3-4**, **P3-6**, **P3-7** — one commit; none of them can break anything.
+5. **P3-5** — do not patch. Run the measurement above the first time the game is up for
+   Phase 4 and record the answer in this file.
+
+Re-run afterwards, from the fork root and this repo:
+
+```sh
+V=/home/max/vsCODE/okport-venv
+$V/bin/python -m pytest tests --tb=no -o addopts="-ra"        # expect 6 failed, 484+N passed, 1 skipped
+$V/bin/python -m pytest tests/test_x11_capture.py -o addopts="-ra"
+env -u DISPLAY $V/bin/python -m pytest tests/test_x11_window.py tests/test_x11_capture.py -o addopts="-ra"
+$V/bin/python tools/scan_module_level_win32.py --check && $V/bin/python tools/check_linux_imports.py
+PYTHONPATH=. $V/bin/python tools/check_linux_startup.py       # from ok-wuthering-waves-linux
+```
+
+Then push the fork, repin `requirements-linux.txt:35` to the new commit, push ok-ww, and
+read **both** runs' logs — P2-9a/P2-15/P2-16's rule, which has caught a false green three
+times in this file.
+
+## State after this pass
+
+| | |
+|---|---|
+| ok-script-linux | `493354a` on `linux-port`, pushed, clean; CI **33672722286** green |
+| ok-ww | `ed8813a` on `master`, pushed, clean; CI **33672918236** green, and its log shows the X11 backend selected |
+| Lock | `requirements-linux.txt:35` -> `493354a` |
+| Phases 0-1 | Re-verified: 27 offenders, 70/70 lazy imports, the `winreg` stub's `FileNotFoundError` contract holds against ok-ww's own registry code |
+| Phase 2 | Re-verified: all fourteen fixes still in the code, 74 tests, no regression from Phase 3 |
+| Phase 3 | Works, and against the real game per §11. Seven findings above, none blocking |
+| Open | **P2-17** (inherited, not ours) and **P3-1 .. P3-7** |
+| Phase 4 readiness | Nothing here blocks it. P3-2 should land first — Phase 4 is the phase that will actually leave the bot running while the user does something else, which is when a task that switches itself off gets noticed |
+
+---
+
+# Eighth pass — the seventh pass's Phase 3 findings, closed (2026-09-02)
+
+Six of the seven went in; **P3-5 was deliberately left alone**, which is what the seventh
+pass's own suggested order asked for. Everything below was executed on this machine
+(`DISPLAY=:0`, real KWin/Xwayland, two monitors, **the game still not running**) against
+the venv at `/home/max/vsCODE/okport-venv`.
+
+| | Outcome |
+|---|---|
+| P3-1 | **fixed** — ok-script-linux `9a53b14`, tightened in `5f1987e`. `_channel_fields` carries each mask's *width*, `_channel_indices` returns `None` for a channel that is not 8 bits wide, and `_unpack_wide` decodes that case. All six 10-bit probes now correct, including mid grey `[0, 2, 8]` -> `[128, 128, 128]` |
+| P3-2 | **fixed** — `do_get_frame` returns `None` for a minimized window and logs once per episode instead of raising. The `CaptureException` import is gone; the module docstring and `LINUX.md`'s load-bearing list say why |
+| P3-3 | **fixed** — `x11_capture_available()` is `xshm.available() and x11.available()`, and `_open`'s two failures log once, as `_load`'s already did. Re-measured with `DISPLAY=:99`: `False` (was `True`), and **one** ERROR for three grabs (was three) |
+| P3-4 | **fixed** — `X11Grabber.composite_active` reports the path actually taken, `get_name()` reads it, and `update_capture_method` calls the new `use_composite_path` so a switch does not wait for the next frame |
+| P3-5 | **still open, still an observation, and still not measurable** — the game was not running for this pass either. Not patched, per the seventh pass's own recommendation. The measurement snippet in P3-5 is unchanged and is the first thing to run when Phase 4 brings the game up |
+| P3-6 | **fixed** — `LINUX.md` gains a **System libraries** subsection under Phase 3 with the Fedora and Debian package names and what their absence costs |
+| P3-7 | **fixed** — `.github/workflows/linux.yml:60` is now `Phase 2-3 exit gate` |
+| P2-17 | **still open, still inherited, still not ours** — nothing changed; the sixth pass's disproof of option (a) stands |
+
+## What was measured, not read
+
+**P3-1.** The seventh pass's five probes plus a black control and an MSBFirst control, on a
+hand-made depth-30 `XImage` (`bits_per_pixel=32`, masks `R=0x3FF00000 G=0x000FFC00
+B=0x000003FF`):
+
+| 10-bit pixel | before | after |
+|---|---|---|
+| red `(1023, 0, 0)` | `[0, 0, 240]` | `[0, 0, 255]` |
+| green `(0, 1023, 0)` | `[0, 252, 15]` | `[0, 255, 0]` |
+| blue `(0, 0, 1023)` | `[255, 3, 0]` | `[255, 0, 0]` |
+| mid grey `(512, 512, 512)` | `[0, 2, 8]` | `[128, 128, 128]` |
+| white | `[255, 255, 255]` | `[255, 255, 255]` |
+| black | `[0, 0, 0]` | `[0, 0, 0]` |
+| red, MSBFirst | — | `[0, 0, 255]` |
+
+`_channel_indices` on that image is `(None, None, None)` after the fix — which is what
+routes it to `_unpack_wide` — and is still `(0, 1, 2)` for a depth-24 image, so the
+measured `cv2.cvtColor` fast path is untouched. That last one is a test
+(`test_the_eight_bit_path_still_takes_the_cheap_copy`), not a comment.
+
+**The cost of the width check, and what it was traded for.** `image_to_bgr` needs both the
+fields and the byte indices. Written the way the seventh pass specified, it derived the
+fields twice per frame — `_channel_fields` 1.16 us + `_channel_indices` 1.68 us = 2.84 us,
+against ~1.0 us before. `5f1987e` splits out `_indices_from_fields`, so the per-frame cost
+is one derivation (1.16 us) and `_channel_indices` is its one-line composition, unchanged
+for its callers and its tests. Against a 1.0-1.8 ms frame either number is noise; it was
+worth removing because it is free to remove.
+
+**P3-2.** `TaskExecutor.py:638-644` re-read: `except Exception` -> `capture_error.emit()`
+-> `task.running = False` -> **`task.disable()`**. The chain the seventh pass described is
+exactly what is in the code. The live test that used to assert the raise
+(`test_an_iconified_window_is_a_capture_exception_not_a_stale_frame`) is now
+`test_an_iconified_window_is_no_frame_not_a_stale_one` and asserts `None`; it ran green on
+this desktop, and its log line is the one-per-episode notice:
+
+```
+INFO x11_capture:0x4e00000 is minimized; X11 cannot capture it. The window layer pauses the executor and notifies.
+```
+
+The stale-frame half of that test — restore, repaint, grab again — is unchanged and still
+passes, so the thing it was really guarding (a compositing WM's backing pixmap making a
+minimized window look like a working capture) is still guarded.
+
+**P3-3.** Out of process, so nothing memoises a bad connection into the rest of the run:
+
+```
+$ DISPLAY=:99 python -c "...x11_capture.x11_capture_available(); three grabs..."
+x11_capture_available: False           # was True
+xshm.available: True  x11.available: False
+ERROR xshm:cannot connect to X display ':99' for capture
+grab -> None
+grab -> None
+grab -> None
+```
+
+One ERROR, three grabs. Before the fix it was one ERROR *per* grab, and
+`x11_capture_available()` was True — so `update.py:42-52` selected the backend and never
+fell through. The unit test patches `x11.available` rather than pointing the real `DISPLAY`
+at a dead server, for the reason the seventh pass gave: `ok/compat/x11.py` memoises its
+connection in a module global, and a test that really connects to `:99` leaves a `None`
+behind that silently skips or fails every live test after it.
+
+**P3-4.** Live, on a 1920x1080 test window painted `0x336699`:
+
+| | ms/frame | `shm_active` | `use_composite` | `composite_active` | centre pixel |
+|---|---|---|---|---|---|
+| direct | 1.78 | True | False | False | `[153, 102, 51]` |
+| composite | 1.68 | True | True | True | `[153, 102, 51]` |
+
+Both paths still land the colour the seventh pass measured (BGR of `0x336699`, no double
+swap), and the two are still within noise of each other. `composite_active` is False the
+moment `_composite_failed` is set, which is the unit test
+`test_the_name_follows_the_path_actually_taken`. The switch-without-a-frame half is
+`test_switching_the_path_takes_effect_before_the_next_frame`, and it goes through the real
+`update_capture_method` with the live object passed back in — the reuse path, which is the
+only way the lag was reachable.
+
+## Verification state (eighth pass)
+
+| | |
+|---|---|
+| Fork suite | **491 passed / 6 failed / 1 skipped / 16 subtests** (498 collected). +7 passes and +6 subtests over the seventh pass's 484/10; the 6 failures are §9b's Windows-only set, unchanged |
+| `tests/test_x11_capture.py` | **41 passed** (was 34) |
+| `tests/test_x11_window.py` | **74 passed**, unchanged — Phase 3's edits touched nothing it covers |
+| Both files, no `DISPLAY` | **92 passed / 23 skipped** (was 85/23) |
+| `tools/scan_module_level_win32.py --check` | exit 0, `TOTAL 27`, same 4 calling a loader at import |
+| `tools/check_linux_imports.py` | exit 0, **70/70** |
+| `tools/check_linux_startup.py` | `PASS` — `do_start selected X11 + PostMessageInteraction`, `capture backend is X11CaptureMethod`, frame step reports itself skipped with no game |
+| Throughput | direct 1.78 ms, composite 1.68 ms at 1920x1080 — the same 6-9x-over-`XGetImage` shape §11 measured; this machine was under more load today than during the seventh pass |
+| Lock ⇄ fork pin | `requirements-linux.txt:35` -> `5f1987e`, confirmed fetchable with no credentials (`GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper= ls-remote`), which is how pip clones it |
+
+Reproduce the whole set:
+
+```sh
+V=/home/max/vsCODE/okport-venv
+cd /home/max/vsCODE/ok-script-linux
+$V/bin/python -m pytest tests --tb=no -o addopts="-ra"
+$V/bin/python -m pytest tests/test_x11_capture.py -o addopts="-ra"
+env -u DISPLAY $V/bin/python -m pytest tests/test_x11_window.py tests/test_x11_capture.py -o addopts="-ra"
+$V/bin/python tools/scan_module_level_win32.py --check && $V/bin/python tools/check_linux_imports.py
+cd /home/max/vsCODE/ok-wuthering-waves-linux && PYTHONPATH=. $V/bin/python tools/check_linux_startup.py
+```
+
+## A note on the commits
+
+Every commit in this pass is **signed**, but not on the first attempt: `git commit` could
+not reach a pinentry from the session that wrote them (`gpg failed to sign the data ...
+PINENTRY_LAUNCHED`), so they went in with `--no-gpg-sign` first — which is what `493354a`
+already is, so the history was mixed rather than uniformly signed. The agent unlocked
+later, and both branches were re-signed with
+`git rebase --exec 'git commit --amend --no-edit -S'` and force-pushed. The rewrite is
+byte-identical: the pre-rewrite head's tree and the re-signed head's tree are the same
+object (`23e61ac`), so only the commit objects changed.
+
+That rewrite is why the CI run IDs below are **not** the ones the first push produced
+(`33692712165` / `33692885303`, both `success` on the pre-rewrite SHAs). Those runs proved
+the same trees, but this file's own rule is a green run on the *exact* pair, so the pair
+below is the one that counts.
+
+## State after this pass
+
+| | |
+|---|---|
+| ok-script-linux | `5f1987e` on `linux-port`, pushed, clean; CI recorded in the follow-up commit |
+| ok-ww | this commit on `master`; CI recorded in the follow-up commit |
+| Lock | `requirements-linux.txt:35` -> `5f1987e` |
+| Phases 0-2 | Untouched by this pass and still green: 74 `test_x11_window.py` tests, 27 offenders, 70/70 lazy imports |
+| Phase 3 | Six of seven findings closed in code and docs; P3-5 is the only Phase 3 item left and it needs the game |
+| Open | **P2-17** (inherited, not ours) and **P3-5** (needs the game running) |
+| Phase 4 readiness | Nothing blocks it. P3-2 landed first, which is what the seventh pass asked for — Phase 4 is when a task that switches itself off would actually be noticed. Two things to settle with the game up: P3-5's letterbox measurement, and the `xprop -spy WM_STATE` question from P3-2 (does Wine/DXVK unmap the toplevel during a fullscreen mode switch, which `is_minimized`'s "not viewable" last resort would read as minimized) |
