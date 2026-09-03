@@ -257,12 +257,15 @@ static LPARAM key_lparam(UINT vk, int is_up) {
      * layer expects; do not precompute it on the Linux side. */
     UINT scan = MapVirtualKeyW(vk, 0);
     LPARAM lparam = ((LPARAM)scan << 16) | 1;
-    if (is_up) lparam |= (1L << 30) | (1L << 31);
+    /* `1L << 31` overflows a 32-bit signed long, which is what `long` is on Windows;
+     * shift the LPARAM type instead. */
+    if (is_up) lparam |= ((LPARAM)1 << 30) | ((LPARAM)1 << 31);
     return lparam;
 }
 
 static LPARAM point_lparam(int x, int y) {
-    return (LPARAM)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
+    /* Unsigned before the shift: a y of 0x8000 or more overflows a signed int here. */
+    return (LPARAM)(DWORD)((((DWORD)y & 0xFFFF) << 16) | ((DWORD)x & 0xFFFF));
 }
 
 /* -------------------------------------------------------------- commands --- */
@@ -345,6 +348,13 @@ static int handle_line(SOCKET s, char *line, int *authed) {
             GetClientRect(hwnd, &rc);
             WideCharToMultiByte(CP_UTF8, 0, cls, -1, cls8, sizeof cls8, NULL, NULL);
             WideCharToMultiByte(CP_UTF8, 0, title, -1, title8, sizeof title8, NULL, NULL);
+            /* A window title is attacker-controlled as far as this protocol is concerned:
+             * a newline in one would split the reply into two lines and desynchronise the
+             * client. */
+            for (char *p = cls8; *p; ++p)
+                if ((unsigned char)*p < 0x20) *p = '?';
+            for (char *p = title8; *p; ++p)
+                if ((unsigned char)*p < 0x20) *p = '?';
             send_line(s, "WININFO hwnd=%llu class=%s visible=%d w=%ld h=%ld title=%s",
                       (unsigned long long)(ULONG_PTR)hwnd, cls8, IsWindowVisible(hwnd) ? 1 : 0,
                       (long)(rc.right - rc.left), (long)(rc.bottom - rc.top), title8);
@@ -387,7 +397,7 @@ static int handle_line(SOCKET s, char *line, int *authed) {
     } else if (strcmp(cmd, "WHEEL") == 0) {
         int x = arg_int(argv, argc, 1, 0), y = arg_int(argv, argc, 2, 0);
         int delta = arg_int(argv, argc, 3, 0);
-        WPARAM wparam = (WPARAM)(DWORD)(((WHEEL_DELTA * delta) & 0xFFFF) << 16);
+        WPARAM wparam = (WPARAM)(DWORD)((((DWORD)(WHEEL_DELTA * delta)) & 0xFFFF) << 16);
         post_msg(s, cmd, WM_MOUSEWHEEL, wparam, point_lparam(x, y));
     } else if (strcmp(cmd, "LDOWN") == 0 || strcmp(cmd, "RDOWN") == 0 ||
                strcmp(cmd, "MDOWN") == 0 || strcmp(cmd, "LUP") == 0 ||
@@ -420,18 +430,24 @@ static int handle_line(SOCKET s, char *line, int *authed) {
 
 /* ----------------------------------------------------------------- main ---- */
 
+/* MultiByteToWideChar leaves the destination undefined when it does not fit, so an
+ * over-long argument must not be allowed to leave a stale or unterminated buffer. */
+static void set_wide(const char *value, wchar_t *out, int cap) {
+    if (MultiByteToWideChar(CP_UTF8, 0, value, -1, out, cap) == 0) out[0] = L'\0';
+}
+
 static void parse_args(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         const char *value = (i + 1 < argc) ? argv[i + 1] : NULL;
         if (!value) break;
         if (strcmp(argv[i], "--exe") == 0)
-            MultiByteToWideChar(CP_UTF8, 0, value, -1, g_exe_name, MAX_PATH), ++i;
+            set_wide(value, g_exe_name, MAX_PATH), ++i;
         else if (strcmp(argv[i], "--class") == 0)
-            MultiByteToWideChar(CP_UTF8, 0, value, -1, g_class_name, 128), ++i;
+            set_wide(value, g_class_name, 128), ++i;
         else if (strcmp(argv[i], "--child-class") == 0)
-            MultiByteToWideChar(CP_UTF8, 0, value, -1, g_child_class, 128), ++i;
+            set_wide(value, g_child_class, 128), ++i;
         else if (strcmp(argv[i], "--handshake") == 0)
-            MultiByteToWideChar(CP_UTF8, 0, value, -1, g_handshake, MAX_PATH), ++i;
+            set_wide(value, g_handshake, MAX_PATH), ++i;
     }
 }
 

@@ -2032,7 +2032,7 @@ In the fork (`RarestStatue/ok-script-linux`, branch `linux-port`):
 ok/compat/proton_shim.py                             new   Steam/Proton resolution, both launch
                                                            shapes, the handshake, the client
 ok/device/interaction_methods/wine_post_message.py   new   WinePostMessageInteraction
-tests/test_wine_post_message.py                      new   62 tests
+tests/test_wine_post_message.py                      new   63 tests
 ok/device/interaction_methods/base.py                edit  get_cursor_pos/set_cursor_pos
 ok/device/interaction_methods/__init__.py            edit  exports the backend
 ok/device/DeviceManager.py                           edit  'WinePostMessage' in both ladders
@@ -2235,7 +2235,7 @@ target, and it is what showed the harness was posting to `class=Edit`.
 | shim launch to handshake, real prefix, host-side `proton run` | **1.3 s** |
 | 100 hot-path writes on the loopback socket | **< 50 ms** (test asserts it) |
 | `wine notepad` harness: handshake, auth, FINDWIN, GEOM, typing while unfocused | passes — **1503 px changed by the text, 0 while idle** |
-| fork suite | **553 passed, 6 failed** (the same six Windows-only ones), 1 skipped |
+| fork suite | **554 passed, 6 failed** (the same six Windows-only ones), 1 skipped |
 | ok-ww startup gate | passes, and now asserts the Wine backend was selected |
 
 ---
