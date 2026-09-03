@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 2 and Phase 3 exit gate: how far does ok-ww's real config get on Linux?
+"""Phase 2, 3 and 4 exit gate: how far does ok-ww's real config get on Linux?
 
 The Phase 1 gate (`check_linux_imports.py`, in the ok-script fork) resolves every lazily
 mapped symbol, which proves the tree *imports*. It cannot prove the app *starts*: the
@@ -26,7 +26,12 @@ What it asserts, in startup order:
 5. The capture method it selected is an X11 one -- `config.py` now offers
    `['X11', 'X11_Composite']` on Linux, and selecting anything else means the branch in
    `update_capture_method` did not fire.
-6. If the game is running, that capture method produces a frame of the right size. This is
+6. The interaction it selected is the Wine shim backend -- `config.py` now offers
+   `['WinePostMessage', 'Pynput']` on Linux, and selecting anything else means the ladder
+   in `DeviceManager` did not fire. This is the half of the Phase 4 criterion that needs
+   neither the game nor Wine: whether the backend is *reachable* from ok-ww's own config.
+   Whether it then reaches the game's wineserver is `tools/check_shim.py --target game`.
+7. If the game is running, that capture method produces a frame of the right size. This is
    the Phase 3 exit criterion, and it is the only step that needs the game: with no game
    window there is nothing to capture and the step reports itself skipped, which is what
    CI sees.
@@ -115,6 +120,13 @@ def main():
     capture = device_manager.capture_method
     print(f'OK    do_start selected {capture.get_name()} + '
           f'{type(device_manager.interaction).__name__}')
+
+    interaction_name = type(device_manager.interaction).__name__
+    if interaction_name != 'WinePostMessageInteraction':
+        fail(f'do_start selected {interaction_name}, not the Wine shim backend; '
+             f'config.py offers {config["windows"]["interaction"]}')
+    print(f'OK    interaction backend is {interaction_name} '
+          f'(connected={device_manager.interaction.connected})')
 
     if capture.get_name() not in ('X11', 'X11_Composite'):
         fail(f'do_start selected {capture.get_name()}, not an X11 capture method; '

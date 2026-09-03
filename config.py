@@ -195,7 +195,14 @@ config = {
         'calculate_pc_exe_path': calculate_pc_exe_path,
         'exe': 'Client-Win64-Shipping.exe',
         'hwnd_class': 'UnrealWindow',
-        'interaction': 'PostMessage',
+        # On Windows: post messages straight to the game's HWND. On Linux the same thing
+        # happens, but from inside the game's Wine prefix, through `okww-input-shim.exe`
+        # (PORT.md Phase 4) -- nothing on the Linux side can reach an *unfocused* window,
+        # so this is what makes background play possible at all. `Pynput` is the
+        # foreground-only fallback [V20], and listing both is what gives the GUI picker
+        # something to switch between.
+        'interaction': (['WinePostMessage', 'Pynput'] if sys.platform == 'linux'
+                        else 'PostMessage'),
         # Windows版本支持的话, 优先使用WGC, 否则使用BitBlt_Full.
         # On Linux neither exists: WGC is a WinRT API and BitBlt needs a Win32 window DC, so
         # the list is the X11 backends instead (PORT.md Phase 3). `X11` grabs the game's own

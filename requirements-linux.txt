@@ -32,7 +32,7 @@ numpy==2.5.2
     #   opencv-python
     #   openvino
     #   shapely
-ok-script[ocr,qt] @ git+https://github.com/RarestStatue/ok-script-linux@5f1987eb3e296856ecc7f666c4b4cdd2057c29f9 ; sys_platform == "linux"
+ok-script[ocr,qt] @ git+https://github.com/RarestStatue/ok-script-linux@bc173d08424ae4614ab9a94eee730e2905141fdd ; sys_platform == "linux"
     # via ok-ww (pyproject.toml)
 onnxocr-ppocrv5==0.0.22
     # via

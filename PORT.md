@@ -25,12 +25,12 @@ Two candidate input mechanisms were tested; results decided the architecture:
 
 **Deployment target: the game runs under Steam + Proton** (appid `3513350`, currently dwproton-11.0-12). The shim is delivered into the running game's prefix with Proton's `run` verb — verified to share a wineserver with an already-running process and to deliver `PostMessage` across that boundary **[V10]**. ok-ww attaches to a game the user launched through Steam; it never launches the game itself.
 
-**Status: two open gates, in this order.**
+**Status (2026-09-02): one open gate.**
 
-1. **[GATE-1b]** — does a shim launched *outside* the SteamLinuxRuntime container join the wineserver of a game Steam launched *inside* it? **[V10]** did **not** test this: it ran both processes outside the container. The toolmanifest declares `require_tool_appid 4183110` **[V9]**, so the real game runs under pressure-vessel. §4b.
-2. **[GATE-2]** — does Wuthering Waves' own Unreal input layer honour `PostMessage` under Wine? §5.
+1. ~~**[GATE-1b]**~~ — **closed, it passes.** A shim launched *outside* the SteamLinuxRuntime container does join the wineserver of a game Steam launched *inside* it: handshake in 1.3 s, `FINDWIN` returned the game's own `UnrealWindow`, `GEOM` returned its exact 2560x1440 client area. See §12.
+2. **[GATE-2]** — does Wuthering Waves' own Unreal input layer honour `PostMessage` under Wine? **Still open.** One attempt showed no reaction, but it sent a bare `KEYDOWN`/`KEYUP` without the `WM_ACTIVATE` ok-ww always sends first, so it settles nothing; the game also exited ~15 s later, and its anti-cheat is already aborting on an unimplemented kernel call under Proton. Retest is deferred to a throwaway environment — §12 and §5.
 
-Everything else is downstream of those two. Do not restate GATE-2 as "the only remaining question"; GATE-1b is upstream of it and is answered by the same spike session.
+Phases 1-4 are built. GATE-2 decides whether the port plays in the *background* or only in the foreground (§4d, a one-line config change).
 
 **Revision note (2026-09-01 audit, second pass).** The plan was re-verified against the actual ok-script 2.0.5 tree and against fresh measurements on this machine. The architecture survives unchanged. Load-bearing corrections, all applied in place:
 
@@ -1249,12 +1249,12 @@ pip install -e .
 | Gate | Question | Blocks | If it fails |
 |---|---|---|---|
 | ~~GATE-1~~ | ~~Does a second `proton run` join an existing Proton wineserver?~~ | — | **RESOLVED — passes, host-side. See [V10].** Separate `proton run` invocations share a wineserver; PostMessage crosses. Scope limit: both processes were outside the SLR container — see GATE-1b. |
-| **GATE-1b** | Does a host-side shim join the wineserver of a game Steam launched **inside** the SteamLinuxRuntime_4 container? | everything downstream | **[V19]** — untested; the toolmanifest declares `require_tool_appid 4183110`. If it fails, launch the shim through `_v2-entry-point` (§4b fallback 1) so it lands in the same container. If *that* also fails, fall back to protontricks, then to a Steam launch-option wrapper that starts the shim alongside the game. |
-| **GATE-2** | Does **Wuthering Waves** (Unreal, likely RawInput/DirectInput) respond to `PostMessage` under Wine as it does on Windows? | background input | Upstream ships `PostMessage` as WW's default on Windows, so the Win32 path is known-good there; the risk is Wine's translation. If it fails, test `ForegroundPostMessage`, then fall back to `Pynput` (§4d **[V20]**), then uinput. |
+| ~~GATE-1b~~ | ~~Does a host-side shim join the wineserver of a game Steam launched **inside** the SteamLinuxRuntime_4 container?~~ | — | **RESOLVED 2026-09-02 — passes. See §12.** Host-side `proton run` against the running game's prefix: handshake in 1.3 s, `FINDWIN` → the game's `UnrealWindow`, `GEOM` → 2560x1440. The `_v2-entry-point` shape stays implemented as the automatic fallback for machines where it does not. |
+| **GATE-2** | Does **Wuthering Waves** (Unreal, likely RawInput/DirectInput) respond to `PostMessage` under Wine as it does on Windows? | background input | **Open — one inconclusive attempt, §12.** Upstream ships `PostMessage` as WW's default on Windows, so the Win32 path is known-good there; the risk is Wine's translation. Retest with `tools/check_shim.py --target game --key m --reuse`, in a throwaway environment: the game's anti-cheat aborts on an unimplemented kernel call under Proton, and the game exited shortly after the first attempt. If it fails, test `ForegroundPostMessage`, then fall back to `Pynput` (§4d **[V20]**), then uinput. |
 | ~~GATE-3~~ | ~~Can X11 capture sustain the needed frame rate at 1080p?~~ | — | **RESOLVED, and re-measured against the real game — see §11.** Wuthering Waves under Proton at 2560x1440: `XShmGetImage` + `cv2.cvtColor` **4.48 ms/frame (223 fps)**, `XGetImage` 29.71 ms (34 fps). The DXVK-backed surface costs more than a plain X client but is nowhere near a limit. |
 | **GATE-4** | Does OpenVINO/onnxocr run acceptably on Linux? | OCR-dependent tasks | Set `use_openvino: False` to fall back to onnxruntime CPU; `use_npu: True` is Windows-NPU-oriented — expect to disable it. `use_openvino` also selects `OpenVinoYolo8Detect` vs `OnnxYolo8Detect` in `src/globals.py:21`, so flipping it changes the echo detector too — benchmark both. |
 
-**GATE-1b and GATE-2 are the two things standing between this plan and confirmed background operation, in that order.** Both are answered by one spike session — the shim plus a running game, a few hours. Do it first, before building out Phases 2–3: every remaining design choice is downstream of the answers. GATE-1b failing changes *how* the shim is launched (§4b fallback 1); GATE-2 failing switches the project to the foreground-only fallback (§4d), which is now a config entry rather than a build.
+**GATE-2 is the one thing standing between this port and confirmed background operation.** GATE-1b is closed (§12): the launch shape is the direct host-side `proton run`, with the container entry point kept as an automatic fallback. GATE-2 failing switches the project to the foreground-only fallback (§4d), which is a config entry rather than a build — `config.py` already lists `Pynput` second.
 
 ---
 
@@ -2016,6 +2016,227 @@ framebuffer.
 * `PostMessageInteraction` is still what `do_start` selects for input on Linux, and it
   cannot post into the Wine window. That is Phase 4, and it is the only thing left between
   here and a working bot.
+
+---
+
+## 12. Phase 4 implementation record (2026-09-02) — what the plan got wrong
+
+Phase 4 is **built, tested, and half-verified against the real game**. The shim, the launcher,
+the socket protocol and `WinePostMessageInteraction` all exist and are green; **[GATE-1b] is
+closed — it passes**; **[GATE-2] is still open**, and the one attempt at it is written up
+below with what it did and did not show.
+
+In the fork (`RarestStatue/ok-script-linux`, branch `linux-port`):
+
+```
+ok/compat/proton_shim.py                             new   Steam/Proton resolution, both launch
+                                                           shapes, the handshake, the client
+ok/device/interaction_methods/wine_post_message.py   new   WinePostMessageInteraction
+tests/test_wine_post_message.py                      new   62 tests
+ok/device/interaction_methods/base.py                edit  get_cursor_pos/set_cursor_pos
+ok/device/interaction_methods/__init__.py            edit  exports the backend
+ok/device/DeviceManager.py                           edit  'WinePostMessage' in both ladders
+tests/test_x11_window.py                             edit  the no-win32 gate covers the new files
+```
+
+In this repo:
+
+```
+shim/okww-input-shim.c        new   ~470 lines of C; the whole in-prefix half
+shim/okww-input-shim.exe      new   the mingw build, committed as §4a requires
+tools/check_shim.py           new   the Phase 4 gate: --target protocol | wine | game
+config.py                     edit  interaction = ['WinePostMessage', 'Pynput'] on Linux
+tools/check_linux_startup.py  edit  asserts the Wine backend is what do_start selects
+.github/workflows/linux.yml   edit  runs the protocol pin
+requirements-linux.txt        edit  repinned at the fork commit
+```
+
+### [GATE-1b] — closed. The host-side `proton run` reaches the containerised game.
+
+With Wuthering Waves running from Steam (pid 284365, launched 19:43:26 through
+SteamLinuxRuntime + DW-Proton 11.0-12), a bare host-side
+
+```sh
+STEAM_COMPAT_DATA_PATH=…/compatdata/3513350 STEAM_COMPAT_CLIENT_INSTALL_PATH=…/Steam \
+  "…/compatibilitytools.d/DW-Proton Latest/proton" run 'C:\okww-input-shim.exe' …
+```
+
+produced a complete handshake in **1.3 s**, and over that socket:
+
+```
+FINDWIN   -> hwnd=196766          the game's own UnrealWindow
+GEOM      -> 0 0 2560 1440        matches the game's client area exactly
+GETCURSOR -> 0 747                answered from inside the prefix
+PING      -> pong … posts=2 errors=0
+```
+
+So a shim launched **outside** pressure-vessel does join the wineserver of a game Steam
+launched **inside** it — `PostMessage` handles resolve across that boundary. The
+SteamLinuxRuntime entry point stays implemented as the automatic fallback (§4b), because
+this is one machine and one Proton build, but it is not needed here.
+
+### [GATE-2] — still open. One attempt, and why it settles nothing.
+
+The attempt posted `m` (the map key) with the game in the open world and the keyboard focus
+on another window. Measured against the game's own idle drift over the same 1.5 s:
+**1.84 vs 1.65 — 1.1x.** Nothing happened. Three reasons that is not yet an answer:
+
+1. **The gate sent a bare `KEYDOWN`/`KEYUP`.** ok-ww never does: `send_key_down` posts
+   `WM_ACTIVATE` first (`try_activate`), and a window that believes it is inactive is
+   exactly the case where an Unreal input layer drops keys. The gate now drives
+   `WinePostMessageInteraction` itself, so a retest sends what the app sends.
+2. **The game exited ~15 s later**, while the shim reported `errors=0` — every `PostMessageW`
+   returned success. Whether that was a coincidence, a reaction to the input, or the
+   anti-cheat is unknown.
+3. **Wuthering Waves has an anti-cheat component, and it is already unhappy under Proton.**
+   Steam's `console-linux.txt` shows, at game launch and *before the shim existed*:
+   `wine: Call from 00006FFFFFBFD947 to unimplemented function
+   ntoskrnl.exe.InbvAcquireDisplayOwnership, aborting`. Synthetic input is what an
+   anti-cheat looks for; a bot posting messages into this game may be detected regardless
+   of whether the port works.
+
+**The retest, when a throwaway environment is available** (the owner's decision, 2026-09-02
+— do not run this against an account that matters):
+
+```sh
+PYTHONPATH=. python3 tools/check_shim.py --target game --key m --reuse
+```
+
+in the open world, watching the screen. It prints the idle drift and the post-keypress
+change and says which was bigger. If the game does not react, §4d's fallback is one config
+entry (`['Pynput']`), and the shim stays for foreground-safe uses.
+
+### Corrections to §4
+
+**P4-1. The shim must be built `-mwindows`, and §4a never says so.** Built as a console
+program — which is what the plain build line in §4a produces — Wine gives every launch a
+`conhost.exe` window: a visible, focusable window sitting in front of the game the user is
+playing, one per shim start. Three of them were up during this session's gate runs, and
+they also show up as extra toplevels in `find_hwnd`'s enumeration. `-mwindows` removes the
+console entirely, which costs nothing: `proton run` swallows stdout anyway **[V12]**, so the
+shim reports through the handshake file and the socket.
+
+**P4-2. "Fire-and-forget" has to be enforced on the *shim* side too.** §4c makes the client
+not wait; that alone deadlocks. If the shim answers `KEYDOWN` and nobody reads the answers,
+the socket buffer fills and the shim blocks in `send` — mid-combat, holding the input path.
+So the shim replies to `HELLO`/`FINDWIN`/`GEOM`/`GETCURSOR`/`VKKEYSCAN`/`PING`/`STATS`/`QUIT`
+and to **nothing else**, and the errors that would have been replies are counted and read
+back by `PING`.
+
+**P4-3. Every reply carries its command as a tag.** Not in §4's protocol table. Without it,
+one out-of-band line — a late error, a reply to a request that timed out — pairs every
+later answer with the wrong question, silently, for the rest of the session. `GEOM 0 0 2560
+1440`, `ERR GEOM notfound`; the client discards lines until the tag matches.
+
+**P4-4. `keys_common.py` is unnecessary — §4c's first bullet is obsolete.** It says to
+extract the key table because `keys.py` does `import win32con` at module level. Phase 1
+already solved that: `ok/compat/win32con_constants` makes `win32con` a real module of real
+integers on Linux **[V25]**, so `keys.py` imports as-is and `vk_key_dict['F1']` is an `int`.
+A test pins that, because a regression there would send stub objects to the shim and
+nothing else would notice.
+
+**P4-5. `VkKeyScan` returns the shift state in the high byte, and upstream posts the whole
+value.** `get_key_by_str` hands `win32api.VkKeyScan(key)` straight through as the virtual-key
+code, so an uppercase `'A'` becomes vk `0x141`, which is not a key. The Linux backend keeps
+the low byte, and resolves `A-Z`/`0-9` locally (the VK code *is* the uppercase codepoint) so
+ordinary keys never pay the round-trip. `VKKEYSCAN` remains for everything else, cached per
+character.
+
+**P4-6. A third upstream bug, not in §4c's list of two.** `PostMessageInteraction.right_click`
+opens with `super().right_click(...)`, and `BaseInteraction` has no such method — the call
+raises `AttributeError` on Windows too. It is dead code: `Task.right_click`
+(`ok/task/task.py:185`) routes through `click(key='right')`. The Linux backend keeps the
+method for signature parity, without the call.
+
+**P4-7. The handshake file must be created by the *Linux* side, at 0600, and carry a status
+field.** §4a asks for restrictive permissions but has the shim create it, which leaves a
+window where the token is world-readable, and it treats the file's existence as the
+readiness signal. Here the Linux side pre-creates it 0600 and the shim truncates it in
+place (`OPEN_ALWAYS`), so the mode is never wrong; and readiness is "it parses and has
+`status=`", not "it exists".
+
+**P4-8. The connection needs a maintainer thread, not connect-on-send.** ok-ww is normally
+started *before* the game. The first attempt fails with "the game is not running", and a
+backend that only retried when something was sent would drop every key of the first seconds
+of play while `proton run` took its 1-20 s. A daemon thread retries on a 2/5/10/30 s
+backoff and reconnects on a dropped link.
+
+**P4-9. `DeviceManager` gets the two-line branch after all.** §4c offers a zero-edit
+alternative — put the *class* in `config['windows']['interaction']`. Both ladders do accept
+it, but the GUI then shows `WinePostMessageInteraction` next to `Pynput`, and ok-ww's
+`config.py` has to import from `ok.device.interaction_methods`. The named branch in both
+ladders (constructor and `set_interaction`) keeps `config.py` pure data and matches §5b's
+own snippet, which lists the string `'WinePostMessage'`.
+
+**P4-10. Picking the SteamLinuxRuntime by name needs care.** This machine has both
+`SteamLinuxRuntime_soldier` and `SteamLinuxRuntime_4` installed, and `sorted(...)[-1]`
+picks `soldier` — `'s' > '4'`. The numbered runtimes are ranked first, highest number first.
+Unused on this machine, since [GATE-1b] passed on the direct path, but it is the fallback
+that runs where it does not.
+
+**P4-11. `update_mouse_pos` returns the packed `MAKELONG`, and the *coordinates* are what go
+on the wire.** §4c's snippet returns the packed value, which is right for parity — but the
+shim takes `x y` and packs the lparam itself, so the backend also keeps `bg_mouse_pos` as
+plain ints and sends those. Getting this wrong is invisible until a click lands in the wrong
+place: both halves come from the same `-1`-aware assignment.
+
+**P4-12. §4c's cursor bullet needs a cache, and §5c says why.** `MouseResetTask` polls at
+2 ms; `GETCURSOR` is one of the few commands that cannot be fire-and-forget. The backend
+caches for 50 ms, which the task's ">200 px jump" test tolerates and which turns a
+saturated link into one round-trip every 50 ms.
+
+**P4-13. The offline notepad harness is where this port's only false green happened.**
+Three separate defects, each of which made the gate report success it had not earned:
+
+* **`wine notepad` keeps its text in an `Edit` child and ignores `WM_CHAR` posted to the
+  frame.** The frame answers by blinking its caret — 48 changed pixels — which the first
+  version of this gate mistook for delivery. The shim grew an optional `--child-class`, used only
+  by the harness; the game needs nothing of the sort, since Unreal's toplevel is the input
+  target, exactly as upstream posts on Windows.
+* **A pixel diff needs a control.** The gate now measures the window's change over an idle
+  interval of the same length first, and requires the typed text to beat it by 5x and 500
+  pixels. A caret cannot pass that; the real thing scores ~1500 against 0.
+* **`fail()` calls `os._exit`, which skips `finally`** — so every failing run leaked its
+  `wine notepad`, and the *next* run found one of those stale windows first (they all have
+  the title "Untitled - Notepad") and captured it while the shim typed into its own. Six
+  leaked notepads accumulated before this was noticed, and the symptom was a gate that
+  failed reproducibly while a hand-run of the same steps passed. The wine target now raises
+  through its cleanup, and it only accepts a window that appeared *after* it started.
+
+The corrected gate: **1503 pixels changed by the typed text, 0 while idle, with the
+keyboard focus on another window** — background delivery into Wine, reproduced three times,
+leaving no processes or prefixes behind.
+
+**P4-14. `WININFO` earns its place in the protocol.** §4a's table has no way to ask which
+window the shim actually picked, and a shim that resolved the wrong window is
+indistinguishable from one that resolved the right one: both post successfully and nothing
+happens. `WININFO` returns the class, title, visibility and client size of the current
+target, and it is what showed the harness was posting to `class=Edit`.
+
+### What Phase 4 did not do
+
+* **[GATE-2] is unanswered**, by the owner's decision, until a throwaway test environment
+  exists. Everything below it in §4d — the `Pynput` fallback — is already reachable: it is
+  the second entry in `config.py`'s interaction list.
+* **§5c is not done.** `CombatCheck.py:223-230` and `MouseResetTask.py:38-52` still call
+  `win32api` directly. The interface they need (`get_cursor_pos`/`set_cursor_pos`) now
+  exists on `BaseInteraction` with a Windows implementation and a Wine one, so 5c is a
+  substitution and a test repoint, in Phase 5.
+* **No `uinput` backend, and no `X11SendEventInteraction`** — both remain what §4d says they
+  are: unnecessary.
+* **The shim does not survive a game restart.** It keeps running (idle-exit 600 s) and
+  re-resolves the window, which is right for a game that is restarted quickly, but nothing
+  reaps it when ok-ww exits other than `QUIT` on `on_destroy` and that timeout.
+
+### Measurements
+
+| | |
+|---|---|
+| shim launch to handshake, real prefix, host-side `proton run` | **1.3 s** |
+| 100 hot-path writes on the loopback socket | **< 50 ms** (test asserts it) |
+| `wine notepad` harness: handshake, auth, FINDWIN, GEOM, typing while unfocused | passes — **1503 px changed by the text, 0 while idle** |
+| fork suite | **553 passed, 6 failed** (the same six Windows-only ones), 1 skipped |
+| ok-ww startup gate | passes, and now asserts the Wine backend was selected |
 
 ---
 

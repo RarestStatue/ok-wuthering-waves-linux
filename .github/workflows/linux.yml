@@ -57,5 +57,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-linux.txt
 
-      - name: Phase 2-3 exit gate
+      - name: Phase 2-4 exit gate
         run: xvfb-run -a python tools/check_linux_startup.py
+
+      # The shim's protocol lives in two repos: the C source here and the client in the
+      # fork. This is the only thing that compares them, and it needs neither Wine nor the
+      # game. The full `--target wine` run (a scratch prefix, notepad, typing while
+      # unfocused) is a desktop gate: it needs wine, ~1 GB of runner time, and a window
+      # manager-less X server does not focus windows the way the assertion expects.
+      - name: Shim protocol pin
+        run: python tools/check_shim.py --target protocol
