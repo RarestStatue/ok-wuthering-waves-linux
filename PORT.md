@@ -2032,8 +2032,9 @@ In the fork (`RarestStatue/ok-script-linux`, branch `linux-port`):
 ok/compat/proton_shim.py                             new   Steam/Proton resolution, both launch
                                                            shapes, the handshake, the client
 ok/device/interaction_methods/wine_post_message.py   new   WinePostMessageInteraction
-tests/test_wine_post_message.py                      new   63 tests
+tests/test_wine_post_message.py                      new   64 tests
 ok/device/interaction_methods/base.py                edit  get_cursor_pos/set_cursor_pos
+ok/util/process.py                                   edit  is_admin() on Linux, for §4d
 ok/device/interaction_methods/__init__.py            edit  exports the backend
 ok/device/DeviceManager.py                           edit  'WinePostMessage' in both ladders
 tests/test_x11_window.py                             edit  the no-win32 gate covers the new files
@@ -2180,6 +2181,12 @@ shim takes `x y` and packs the lparam itself, so the backend also keeps `bg_mous
 plain ints and sends those. Getting this wrong is invisible until a click lands in the wrong
 place: both halves come from the same `-1`-aware assignment.
 
+**P4-12a. §4d's "cosmetic wart" is fixed rather than tolerated.** `is_admin()` asks a
+Windows question through `ctypes.windll.shell32`, which the compat stub answers by raising,
+so `PynputInteraction` announced "You must be an admin to use PynputInteraction" on every
+Linux start. It now answers `os.geteuid() == 0` on Linux. XTEST needs no privilege; a
+fallback that cries wolf is a fallback nobody trusts.
+
 **P4-12. §4c's cursor bullet needs a cache, and §5c says why.** `MouseResetTask` polls at
 2 ms; `GETCURSOR` is one of the few commands that cannot be fire-and-forget. The backend
 caches for 50 ms, which the task's ">200 px jump" test tolerates and which turns a
@@ -2224,6 +2231,9 @@ target, and it is what showed the harness was posting to `class=Edit`.
   substitution and a test repoint, in Phase 5.
 * **No `uinput` backend, and no `X11SendEventInteraction`** — both remain what §4d says they
   are: unnecessary.
+* **No protontricks and no Steam launch-option wrapper** (§4b fallbacks 2 and 3). The
+  primary launch shape works here and the container entry point is implemented behind it;
+  a third and fourth path would be untested code on the failure branch of a branch.
 * **The shim does not survive a game restart.** It keeps running (idle-exit 600 s) and
   re-resolves the window, which is right for a game that is restarted quickly, but nothing
   reaps it when ok-ww exits other than `QUIT` on `on_destroy` and that timeout.
@@ -2235,7 +2245,7 @@ target, and it is what showed the harness was posting to `class=Edit`.
 | shim launch to handshake, real prefix, host-side `proton run` | **1.3 s** |
 | 100 hot-path writes on the loopback socket | **< 50 ms** (test asserts it) |
 | `wine notepad` harness: handshake, auth, FINDWIN, GEOM, typing while unfocused | passes — **1503 px changed by the text, 0 while idle** |
-| fork suite | **554 passed, 6 failed** (the same six Windows-only ones), 1 skipped |
+| fork suite | **555 passed, 6 failed** (the same six Windows-only ones), 1 skipped |
 | ok-ww startup gate | passes, and now asserts the Wine backend was selected |
 
 ---
